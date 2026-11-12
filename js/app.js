@@ -7,7 +7,7 @@ import * as G from './gen.js';
 import { renderMd, esc } from './md.js';
 import { ICON, BRAND } from './icons.js';
 
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const V = () => $('#view');
@@ -222,13 +222,32 @@ function askTitle(def) {
   });
 }
 
-// ───────────────────────── 1. 작업실 (채팅) ─────────────────────────
+// ───────────────────────── 1. 작업실 (채팅 + 도구 모드) ─────────────────────────
+// 대화 중에 생성기·상태창·글꾸·검사기를 바로 실행. 결과는 채팅 안에 카드로, 이어서 말하면 그 결과를 고쳐요.
+const CHAT_MODES = {
+  chat: { label: '대화', icon: 'chat', ph: '무엇이든 같이 만들어요' },
+  lore: { label: '로어북', icon: 'book', ph: '어떤 로어북? (위 대화도 참고해요)', plat: true },
+  regex: { label: '정규식', icon: 'forge', ph: '어떤 정규식이 필요해요?', plat: true },
+  trigger: { label: '트리거', icon: 'spark', ph: '어떤 버튼·트리거? (리스 전용)' },
+  ui: { label: '상태창', icon: 'studio', ph: '상태창 컨셉·필드·분위기', plat: true },
+  board: { label: '글꾸', icon: 'board', ph: '게시글 본문 + 원하는 분위기' },
+  lint: { label: '검사', icon: 'lint', ph: '검사할 내용 붙여넣기', plat: true }
+};
+const MODE_SCOPE = { chat: 'chat', lore: 'gen', regex: 'gen', trigger: 'gen', ui: 'ui', board: 'board' };
 const SUGGEST = [
-  { t: '캐릭터 설계', d: '숨겨진 동기·말투·관계성까지', p: '새 캐릭터를 같이 설계하고 싶어요. 먼저 컨셉을 말씀드릴게요: ' },
-  { t: '로어북 구조 짜기', d: '키워드 엔트리 + 인덱스 구성', p: '이 세계관의 로어북 구조를 같이 짜 주세요. 세계관 요약: ' },
-  { t: '상태창 컨셉 회의', d: '정보 위계부터 디자인 언어까지', p: '상태창 디자인 컨셉을 같이 잡고 싶어요. 봇 분위기: ' },
-  { t: '프롬프트 검토', d: 'OOC·설정 충돌·규칙 위반 점검', p: '아래 시스템 프롬프트를 검토해 주세요. OOC 위험, 설정 충돌, 토큰 낭비를 짚어 주세요.\n\n' }
+  { t: '캐릭터 설계', d: '숨겨진 동기·말투·관계성까지', mode: 'chat', p: '새 캐릭터를 같이 설계하고 싶어요. 먼저 컨셉을 말씀드릴게요: ' },
+  { t: '프롬프트 검토', d: 'OOC·설정 충돌·토큰 낭비 점검', mode: 'chat', p: '아래 시스템 프롬프트를 검토해 주세요. OOC 위험, 설정 충돌, 토큰 낭비를 짚어 주세요.\n\n' },
+  { t: '로어북 생성', d: '설명만 쓰면 임포트용 JSON', mode: 'lore', p: '' },
+  { t: '상태창 디자인', d: '실제 렌더 미리보기까지', mode: 'ui', p: '' },
+  { t: '글꾸 만들기', d: '게시판 규칙 지키는 꾸밈', mode: 'board', p: '' },
+  { t: '규칙 검사', d: '붙여넣으면 바로 점검', mode: 'lint', p: '' }
 ];
+const threadMode = (th = curThread()) => th.mode && CHAT_MODES[th.mode] ? th.mode : 'chat';
+const threadPlat = (th = curThread()) => th.platform || defaultPlatform();
+function prevResult(th, mode) {
+  for (let i = th.messages.length - 1; i >= 0; i--) { const m = th.messages[i]; if (m.result?.mode === mode && !m.error) return m; }
+  return null;
+}
 
 function viewChat() {
   const th = curThread();
@@ -240,16 +259,12 @@ function viewChat() {
     </div>
     <div class="msgs" id="msgs"></div>
     <form class="composer" id="composer">
+      <div id="mode-area"></div>
       <div class="composer-box">
-        <textarea id="prompt" rows="1" placeholder="설정·캐릭터·정규식… 무엇이든 같이 만들어요"></textarea>
+        <textarea id="prompt" rows="1"></textarea>
         <button type="submit" class="send ${S.busy ? 'busy' : ''}" id="send" aria-label="${S.busy ? '중지' : '보내기'}">${S.busy ? ICON.stop : ICON.send}</button>
       </div>
-      <div class="composer-foot">
-        <button type="button" class="pill" data-act="tab" data-tab="settings">${ICON.book}<span>지식 ${S.kb.modules.filter(m => m.enabled).length}</span></button>
-        <button type="button" class="pill ${customsFor('chat').length ? 'lit' : ''}" data-act="chat-prompts">${ICON.scroll}<span>프롬프트 ${customsFor('chat').length}</span></button>
-        <button type="button" class="pill" data-act="tab" data-tab="settings">${ICON.link}<span>${esc(P.activeModelLabel(S.settings))}</span></button>
-        <span class="grow"></span><span class="hint-key">Ctrl+Enter 전송</span>
-      </div>
+      <div class="composer-foot" id="composer-foot"></div>
     </form>
   </section>`;
   const ta = $('#prompt');
@@ -262,8 +277,39 @@ function viewChat() {
     const t = ta.value.trim(); if (!t) return;
     ta.value = ''; fit(); sendChat(t);
   });
+  $('#mode-area').addEventListener('click', async e => {
+    const m = e.target.closest('[data-mode]');
+    if (m) { th.mode = m.dataset.mode; await db.put('threads', th); renderComposer(); $('#prompt').focus(); return; }
+    const c = e.target.closest('[data-cont]');
+    if (c) { S.chatCont = !(S.chatCont ?? true); renderComposer(); }
+  });
   if (S.pendingPrompt) { ta.value = S.pendingPrompt; S.pendingPrompt = null; fit(); ta.focus(); }
+  renderComposer();
   renderMsgs(true);
+}
+
+function renderComposer() {
+  const th = curThread(), mode = threadMode(th), M = CHAT_MODES[mode];
+  const prev = mode !== 'chat' && mode !== 'lint' ? prevResult(th, mode) : null;
+  const cont = S.chatCont ?? true;
+  const showPlat = M.plat;
+  $('#mode-area').innerHTML = `
+    <div class="modes" role="tablist" aria-label="작업 모드">${Object.entries(CHAT_MODES).map(([k, v]) => `<button type="button" role="tab" class="mode ${k === mode ? 'on' : ''}" data-mode="${k}" aria-selected="${k === mode}">${ICON[v.icon]}<span>${v.label}</span></button>`).join('')}</div>
+    ${showPlat || prev ? `<div class="mode-opts">
+      ${mode === 'lint' ? `<div class="seg small" data-seg="chat-lintas">${[['risu', '리스 기준'], ['st', '실리 기준'], ['board', '글꾸 규칙']].map(([k, l]) => `<button type="button" class="${(th.lintAs || threadPlat(th)) === k ? 'on' : ''}" data-v="${k}">${l}</button>`).join('')}</div>` : showPlat ? platformSelect('chat-plat', threadPlat(th)) : ''}
+      ${prev ? `<button type="button" class="cont ${cont ? 'on' : ''}" data-cont>${ICON.refresh}<span>${cont ? '직전 결과를 이어서 수정' : '새로 만들기'}</span></button>` : ''}
+    </div>` : ''}`;
+  bindSeg($('#mode-area'), 'chat-plat', async v => { th.platform = v; await db.put('threads', th); });
+  bindSeg($('#mode-area'), 'chat-lintas', async v => { th.lintAs = v; await db.put('threads', th); });
+  $('#prompt').placeholder = M.ph;
+  const target = mode === 'lint' ? null : mode;
+  const n = target ? customsFor(target).length : 0;
+  $('#composer-foot').innerHTML = `
+    ${mode === 'lint' ? `<span class="pill">${ICON.lint}<span>AI 미사용 · 기기 안에서 검사</span></span>` : `
+    <button type="button" class="pill" data-act="tab" data-tab="settings">${ICON.book}<span>지식 ${S.kb.modules.filter(m => m.enabled && (m.scope || []).includes(MODE_SCOPE[mode])).length}</span></button>
+    <button type="button" class="pill ${n ? 'lit' : ''}" data-act="chat-prompts">${ICON.scroll}<span>프롬프트 ${n}</span></button>
+    <button type="button" class="pill" data-act="tab" data-tab="settings">${ICON.link}<span>${esc(P.activeModelLabel(S.settings))}</span></button>`}
+    <span class="grow"></span><span class="hint-key">Ctrl+Enter 전송</span>`;
 }
 
 function renderMsgs(scroll = false) {
@@ -274,26 +320,36 @@ function renderMsgs(scroll = false) {
     box.innerHTML = `<div class="empty-desk">
       <div class="desk-mark">${BRAND}</div>
       <h2>${esc(p.name)}</h2>
-      <p>${p.platform ? esc(platformLabel(p.platform)) : '플랫폼 미정'} · 지식 ${S.kb.modules.filter(m => m.enabled).length}개가 탑재된 제작 파트너와 대화해요.</p>
-      <div class="suggest">${SUGGEST.map((s, i) => `<button class="suggest-card" data-act="suggest" data-i="${i}"><b>${s.t}</b><span>${s.d}</span></button>`).join('')}</div>
+      <p>${p.platform ? esc(platformLabel(p.platform)) : '플랫폼 미정'} · 대화하면서 로어북·정규식·트리거·상태창·글꾸·검사까지 여기서 바로 해요.</p>
+      <div class="suggest">${SUGGEST.map((s, i) => `<button class="suggest-card" data-act="suggest" data-i="${i}"><span class="sg-mode">${ICON[CHAT_MODES[s.mode].icon]}</span><b>${s.t}</b><span>${s.d}</span></button>`).join('')}</div>
       ${!p.platform ? `<button class="btn small ghost" data-act="projects">${ICON.edit} 프로젝트 플랫폼 지정하기</button>` : ''}
     </div>`;
     return;
   }
   box.innerHTML = th.messages.map((m, i) => msgHtml(m, i)).join('');
-  th.messages.forEach((m, i) => { if (m.role === 'assistant' && !m.error) decorateCodes(i); });
+  th.messages.forEach((m, i) => { if (m.role === 'assistant' && !m.error && !m.result) decorateCodes(i); });
   if (scroll) box.scrollTop = box.scrollHeight;
 }
 function msgHtml(m, i) {
-  if (m.role === 'user') return `<article class="msg user" data-mi="${i}"><div class="msg-body">${esc(m.content).replace(/\n/g, '<br>')}</div><div class="msg-acts"><button class="mini" data-act="msg-copy" data-mi="${i}" aria-label="복사">${ICON.copy}</button><button class="mini" data-act="msg-edit" data-mi="${i}" aria-label="수정해서 다시 보내기">${ICON.edit}</button><button class="mini" data-act="msg-del" data-mi="${i}" aria-label="삭제">${ICON.trash}</button></div></article>`;
-  const r = m.error ? { html: `<p>${esc(m.content)}</p>` } : renderMd(m.content, { streaming: m.streaming });
-  if (!m.error) S.codes[i] = r.codes;
+  if (m.role === 'user') {
+    const md = m.mode && m.mode !== 'chat' ? CHAT_MODES[m.mode] : null;
+    return `<article class="msg user" data-mi="${i}">${md ? `<span class="msg-mode">${ICON[md.icon]}${md.label}${m.cont ? ' · 수정' : ''}</span>` : ''}<div class="msg-body ${m.mode === 'lint' ? 'mono-body' : ''}">${esc(m.mode === 'lint' && m.content.length > 600 ? m.content.slice(0, 600) + ' …' : m.content).replace(/\n/g, '<br>')}</div><div class="msg-acts"><button class="mini" data-act="msg-copy" data-mi="${i}" aria-label="복사">${ICON.copy}</button><button class="mini" data-act="msg-edit" data-mi="${i}" aria-label="수정해서 다시 보내기">${ICON.edit}</button><button class="mini" data-act="msg-del" data-mi="${i}" aria-label="삭제">${ICON.trash}</button></div></article>`;
+  }
   const last = i === curThread().messages.length - 1;
-  return `<article class="msg assistant ${m.error ? 'error' : ''} ${m.streaming ? 'streaming' : ''}" data-mi="${i}">
+  let body;
+  if (m.streaming && m.tool) body = toolProgressHtml(m);
+  else if (m.result) body = resultCardHtml(m, i);
+  else if (m.error) body = `<p>${esc(m.content)}</p>`;
+  else { const r = renderMd(m.content, { streaming: m.streaming }); S.codes[i] = r.codes; body = r.html; }
+  if (m.parseError) body = `<div class="parse-err">${ICON.lint}<span>결과를 JSON으로 해석하지 못했어요 — ${esc(m.parseError)} 아래 원문을 보고 다시 생성해 보세요.</span></div>` + body;
+  return `<article class="msg assistant ${m.error ? 'error' : ''} ${m.streaming ? 'streaming' : ''} ${m.result ? 'has-result' : ''}" data-mi="${i}">
     <div class="msg-seal">${m.error ? '!' : '아'}</div>
-    <div class="msg-main"><div class="msg-body">${r.html || '<p class="typing"><i></i><i></i><i></i></p>'}</div>
-    ${m.streaming ? '' : `<div class="msg-acts">${m.error ? '' : `<button class="mini" data-act="msg-copy" data-mi="${i}" aria-label="복사">${ICON.copy}</button><button class="mini" data-act="msg-save" data-mi="${i}" aria-label="보관함 저장">${ICON.vault}</button>`}${last ? `<button class="mini" data-act="msg-regen" data-mi="${i}" aria-label="다시 생성">${ICON.refresh}</button>` : ''}<button class="mini" data-act="msg-del" data-mi="${i}" aria-label="삭제">${ICON.trash}</button>${m.model ? `<span class="msg-model">${esc(m.model)}</span>` : ''}</div>`}</div>
+    <div class="msg-main"><div class="msg-body">${body || '<p class="typing"><i></i><i></i><i></i></p>'}</div>
+    ${m.streaming ? '' : `<div class="msg-acts">${m.error || m.result ? '' : `<button class="mini" data-act="msg-copy" data-mi="${i}" aria-label="복사">${ICON.copy}</button><button class="mini" data-act="msg-save" data-mi="${i}" aria-label="보관함 저장">${ICON.vault}</button>`}${last && m.result?.mode !== 'lint' ? `<button class="mini" data-act="msg-regen" data-mi="${i}" aria-label="다시 생성">${ICON.refresh}</button>` : ''}<button class="mini" data-act="msg-del" data-mi="${i}" aria-label="삭제">${ICON.trash}</button>${m.model ? `<span class="msg-model">${esc(m.model)}</span>` : ''}</div>`}</div>
   </article>`;
+}
+function toolProgressHtml(m) {
+  return `<div class="tool-progress"><div class="loom"><i></i><i></i><i></i><i></i><i></i></div><div><b>${esc(CHAT_MODES[m.tool].label)} ${m.cont ? '고치는' : '만드는'} 중</b><small>${m.content.length ? `${m.content.length.toLocaleString()}자 수신` : '응답 대기 중…'}</small></div></div>`;
 }
 function decorateCodes(mi) {
   const art = $(`.msg[data-mi="${mi}"]`); if (!art) return;
@@ -307,15 +363,121 @@ function decorateCodes(mi) {
   });
 }
 
-async function sendChat(text, { replaceLast = false } = {}) {
+// ── 결과 카드 (채팅 안) ──
+function resultView(res) {
+  const v = { title: '', primary: '', ext: 'json', issues: [], preview: null, notes: res.ai?.notes || '', list: '' };
+  const ai = res.ai || {};
+  if (res.mode === 'lore' || res.mode === 'regex' || res.mode === 'trigger') {
+    const o = forgeOutputs(res.mode, ai, res.mode === 'trigger' ? 'risu' : res.platform);
+    v.primary = Object.values(o.texts)[0];
+    v.issues = L.lint(v.primary).issues;
+    v.warnings = o.warnings || [];
+    if (res.mode === 'lore') {
+      v.title = `엔트리 ${o.entries.length}개`;
+      v.list = `<div class="res-list">${o.entries.map(e => `<span class="res-item ${e.constant ? 'const' : ''}" title="${esc((e.content || '').slice(0, 160))}">${e.constant ? '◆ ' : ''}${esc(e.comment || '(이름 없음)')}<small>${esc((e.keys || []).slice(0, 4).join(', '))}</small></span>`).join('')}</div>`;
+    } else if (res.mode === 'regex') {
+      v.title = `정규식 ${o.rules.length}개`;
+      v.list = `<div class="res-list">${o.rules.map(r => `<span class="res-item">${esc(r.comment || '정규식')}<small>${esc(r.kind || 'display')}</small></span>`).join('')}</div>`;
+      if (o.sample) v.preview = C.renderSample(o.sample, C.normalizeRegexJson(JSON.parse(v.primary)), res.platform).html;
+    } else {
+      const ts = o.outputs.risu;
+      v.title = `트리거 ${ts.length}개`;
+      v.list = `<div class="res-list">${ts.map(t => `<span class="res-item">${esc(t.comment || '(이름 없음)')}<small>${esc(t.type)}</small></span>`).join('')}</div>` + (o.buttons ? `<pre class="inline-code">${esc(o.buttons)}</pre>` : '');
+    }
+  } else if (res.mode === 'ui') {
+    v.title = ai.name || '상태창';
+    v.concept = ai.concept;
+    const exp = studioExportFrom(ai, res.platform);
+    v.primary = JSON.stringify(exp, null, 2);
+    v.issues = L.lint(v.primary).issues.concat(L.lintText(ai.promptFormat || '', '프롬프트 포맷'));
+    v.preview = C.renderSample(ai.sample || '', res.platform === 'risu' ? C.normalizeRegexJson(exp) : ai.rules, res.platform, ai.vars || {}).html;
+  } else if (res.mode === 'board') {
+    v.title = ai.title || '글꾸';
+    v.primary = ai.html || ''; v.ext = 'html';
+    v.issues = L.lintBoard(v.primary);
+    v.preview = v.primary; v.bg = 'light';
+  } else if (res.mode === 'lint') {
+    v.title = L.KINDS[res.kind] || (res.kind === 'badjson' ? 'JSON 오류' : res.kind);
+    v.issues = res.issues; v.primary = res.src; v.ext = /^\s*[\[{]/.test(res.src) ? 'json' : 'html';
+  }
+  return v;
+}
+function resultCardHtml(m, i) {
+  const res = m.result, M = CHAT_MODES[res.mode];
+  let v;
+  try { v = resultView(res); } catch (e) { return `<div class="parse-err">${ICON.lint}<span>결과를 표시하지 못했어요: ${esc(e.message)}</span></div>`; }
+  const cnt = { error: 0, warn: 0, info: 0 }; v.issues.forEach(x => cnt[x.level]++);
+  const btn = (op, icon, label, cls = '') => `<button class="code-btn ${cls}" data-act="res" data-op="${op}" data-mi="${i}">${ICON[icon]}<span>${label}</span></button>`;
+  const platBadge = ['lore', 'regex', 'ui'].includes(res.mode) || (res.mode === 'lint' && res.platform)
+    ? `<span class="plat plat-${res.platform}">${res.platform === 'st' ? '실리' : '리스'}</span>` : res.mode === 'trigger' ? '<span class="plat plat-risu">리스</span>' : '';
+  const acts = {
+    lore: btn('swap', 'refresh', res.platform === 'st' ? '리스로 전환' : '실리로 전환') + btn('copy', 'copy', '복사') + btn('save', 'vault', '보관') + btn('open', 'forge', '생성기에서') + btn('dl', 'download', '받기', 'strong'),
+    regex: (v.preview ? btn('expand', 'eye', '크게') : '') + btn('swap', 'refresh', res.platform === 'st' ? '리스로 전환' : '실리로 전환') + btn('copy', 'copy', '복사') + btn('save', 'vault', '보관') + btn('open', 'forge', '생성기에서') + btn('dl', 'download', '받기', 'strong'),
+    trigger: btn('copy', 'copy', '복사') + btn('save', 'vault', '보관') + btn('open', 'forge', '생성기에서') + btn('dl', 'download', '받기', 'strong'),
+    ui: btn('expand', 'eye', '크게') + btn('fmt', 'copy', '포맷 복사') + btn('save', 'vault', '보관') + btn('open', 'studio', '스튜디오에서') + btn('dl-st', 'download', '실리용') + btn('dl-risu', 'download', '리스용', 'strong'),
+    board: btn('expand', 'eye', '크게') + (/<style\b|\sclass\s*=/i.test(v.primary) ? btn('inline', 'wand', '인라인 변환') : '') + btn('save', 'vault', '보관') + btn('open', 'board', '글꾸에서') + btn('dl', 'download', 'HTML') + btn('copy', 'copy', '복사', 'strong'),
+    lint: (v.issues.some(x => x.fixable) ? btn('fix', 'wand', '자동 수정', 'strong') : '') + (v.issues.some(x => x.level !== 'info') ? btn('askfix', 'chat', 'AI에게 고치기') : '') + btn('open', 'lint', '검사기에서') + (res.fixed ? btn('copy', 'copy', '복사') + btn('dl', 'download', '받기') : '')
+  }[res.mode];
+  return `<div class="res-card res-${res.mode}">
+    <div class="res-head"><span class="res-tag">${ICON[M.icon]}${M.label}${res.fixed ? ' · 자동 수정본' : ''}</span>${platBadge}<span class="grow"></span>
+      <span class="res-lv">${cnt.error ? `<i class="lv error">오류 ${cnt.error}</i>` : ''}${cnt.warn ? `<i class="lv warn">경고 ${cnt.warn}</i>` : ''}${!cnt.error && !cnt.warn ? `<i class="lint-ok">${ICON.check}통과</i>` : ''}</span></div>
+    <div class="res-title">${esc(v.title)}</div>
+    ${v.concept ? `<p class="res-concept">${esc(v.concept)}</p>` : ''}
+    ${res.fixedNotes ? `<ul class="fix-notes">${res.fixedNotes.map(n => `<li>${ICON.check}<span>${esc(n)}</span></li>`).join('')}</ul>` : ''}
+    ${v.notes ? `<div class="notes">${renderMd(v.notes).html}</div>` : ''}
+    ${v.list}
+    ${v.preview != null ? `<div class="res-frame"><iframe sandbox="" title="미리보기" srcdoc="${esc(C.previewDoc(v.preview, { bg: v.bg || 'dark' }))}"></iframe></div>` : ''}
+    ${(v.warnings || []).length ? `<ul class="conv-warn">${[...new Set(v.warnings)].map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
+    ${v.issues.length ? `<details class="res-issues" ${res.mode === 'lint' ? 'open' : ''}><summary>검사 결과 ${v.issues.length}건</summary>${issuesHtml(v.issues, { compact: true })}</details>` : ''}
+    ${res.mode === 'lint' && res.fixed ? `<pre class="res-code">${esc(res.src.slice(0, 1500))}${res.src.length > 1500 ? '\n…' : ''}</pre>` : ''}
+    <div class="res-acts">${acts}</div>
+  </div>`;
+}
+function lintSummaryText(r, fixedNotes) {
+  const c = { error: 0, warn: 0, info: 0 }; r.issues.forEach(x => c[x.level]++);
+  return `[검사 결과 · ${L.KINDS[r.kind] || r.kind}] 오류 ${c.error} · 경고 ${c.warn} · 참고 ${c.info}${fixedNotes ? '\n(자동 수정 적용: ' + fixedNotes.join(', ') + ')' : ''}\n` + r.issues.map(i => `- [${i.code}] ${i.where ? i.where + ': ' : ''}${i.msg}`).join('\n');
+}
+function makeTask(mode, text, platform) {
+  if (mode === 'lore') return G.lorebookTask({ platform, brief: text, count: '', index: true });
+  if (mode === 'regex') return G.regexTask({ platform, brief: text });
+  if (mode === 'trigger') return G.triggerTask({ brief: text });
+  if (mode === 'ui') return G.uiTask({ platform, brief: text });
+  return G.boardTask({ kind: '자유', body: text, concept: '', images: '', width: 700 });
+}
+function validateResult(mode, ai) {
+  if (mode === 'ui' && (!Array.isArray(ai.rules) || !ai.rules.length)) throw new Error('응답에 정규식(rules)이 없어요.');
+  if (mode === 'board' && !ai.html) throw new Error('응답에 html 이 없어요.');
+  if (mode === 'lore' && !Array.isArray(ai.entries || ai)) throw new Error('응답에 entries 가 없어요.');
+  if (mode === 'regex' && !Array.isArray(ai.rules)) throw new Error('응답에 rules 가 없어요.');
+}
+
+async function sendChat(text, opts = {}) {
   const th = curThread();
-  if (!replaceLast) th.messages.push({ role: 'user', content: text, ts: Date.now() });
-  if (th.title === '새 대화') th.title = text.replace(/\s+/g, ' ').slice(0, 28);
-  const hist = th.messages.filter(m => !m.error).slice(-(Number(S.settings.history) || 30)).map(({ role, content }) => ({ role, content }));
-  const asst = { role: 'assistant', content: '', ts: Date.now(), streaming: true };
+  const mode = opts.mode ?? threadMode(th);
+  const platform = mode === 'trigger' ? 'risu' : (opts.platform ?? threadPlat(th));
+  const prev = mode !== 'chat' && mode !== 'lint' ? prevResult(th, mode) : null;
+  const cont = opts.cont ?? (!!prev && (S.chatCont ?? true));
+  if (!opts.replaceLast) th.messages.push({ role: 'user', content: text, ts: Date.now(), mode, platform, cont });
+  if (th.title === '새 대화') th.title = (mode !== 'chat' ? `[${CHAT_MODES[mode].label}] ` : '') + text.replace(/\s+/g, ' ').slice(0, 26);
+
+  if (mode === 'lint') { // AI 없이 즉시
+    const as = th.lintAs || platform;
+    const r = as === 'board' ? L.lint(text, 'board') : L.lint(text, 'auto', as);
+    th.messages.push({ role: 'assistant', content: lintSummaryText(r), ts: Date.now(), result: { mode: 'lint', kind: r.kind, issues: r.issues, src: text, platform: as === 'board' ? null : as } });
+    th.updatedAt = Date.now(); await db.put('threads', th);
+    if (S.tab === 'chat') viewChat();
+    return;
+  }
+
+  const N = Number(S.settings.history) || 30;
+  const hist = th.messages.filter(m => !m.error && !m.streaming).slice(-N).map(m => ({
+    role: m.role,
+    content: mode !== 'chat' && m.result ? `[이전 결과: ${CHAT_MODES[m.result.mode].label}${m.result.ai?.name || m.result.ai?.title ? ' — ' + (m.result.ai.name || m.result.ai.title) : ''}]` : m.content
+  }));
+  const asst = { role: 'assistant', content: '', ts: Date.now(), streaming: true, tool: mode !== 'chat' ? mode : null, cont };
   th.messages.push(asst);
   S.busy = true; S.abort = new AbortController();
-  if (S.tab === 'chat') { viewChat(); }
+  if (S.tab === 'chat') viewChat();
   const mi = th.messages.length - 1;
   let raf = 0;
   const paint = () => {
@@ -324,24 +486,87 @@ async function sendChat(text, { replaceLast = false } = {}) {
     const body = $(`.msg[data-mi="${mi}"] .msg-body`); if (!body) return;
     const box = $('#msgs');
     const atBottom = box && box.scrollHeight - box.scrollTop - box.clientHeight < 120;
-    body.innerHTML = renderMd(asst.content, { streaming: true }).html;
+    body.innerHTML = asst.tool ? toolProgressHtml(asst) : renderMd(asst.content, { streaming: true }).html;
     if (atBottom) box.scrollTop = box.scrollHeight;
   };
   try {
-    const system = buildSystem({ kb: S.kb, persona: S.settings.persona, project: curProject(), scope: 'chat',
-      extra: '# 응답 방식\n요청을 분석해 캐릭터·봇 기획 / UI·상태창 디자인 / 코딩·시스템 / 스토리 창작 / 게시판 글꾸 중 맞는 관점으로 답하고, 복합 요청이면 관점을 연결하세요. 결론부터.', customs: customsFor('chat') });
-    await P.chat({ system, messages: hist, cfg: S.settings, signal: S.abort.signal, onDelta: (_, full) => { asst.content = full; if (!raf) raf = requestAnimationFrame(paint); } });
+    let system, messages;
+    if (mode === 'chat') {
+      system = buildSystem({ kb: S.kb, persona: S.settings.persona, project: curProject(), scope: 'chat',
+        extra: '# 응답 방식\n요청을 분석해 캐릭터·봇 기획 / UI·상태창 디자인 / 코딩·시스템 / 스토리 창작 / 게시판 글꾸 중 맞는 관점으로 답하고, 복합 요청이면 관점을 연결하세요. 결론부터.', customs: customsFor('chat') });
+      messages = hist;
+    } else {
+      const task = cont
+        ? G.reviseTask(CHAT_MODES[mode].label, JSON.stringify(prev.result.ai, null, 2), text, issuesText(resultView(prev.result).issues))
+        : makeTask(mode, text, platform);
+      system = buildSystem({ kb: S.kb, persona: S.settings.persona, project: curProject(), scope: MODE_SCOPE[mode], customs: customsFor(mode),
+        extra: task.extra + '\n\n(앞선 대화 내용은 맥락으로 참고하되, 출력은 반드시 지정된 JSON 코드 블록 하나만.)' });
+      messages = hist.slice(0, -1).concat([{ role: 'user', content: task.user }]);
+    }
+    await P.chat({ system, messages, cfg: S.settings, signal: S.abort.signal, onDelta: (_, full) => { asst.content = full; if (!raf) raf = requestAnimationFrame(paint); } });
     asst.model = S.settings[S.settings.active]?.model;
+    if (mode !== 'chat') {
+      try { const ai = G.extractJson(asst.content); validateResult(mode, ai); asst.result = { mode, platform, ai }; }
+      catch (e) { asst.parseError = e.message; }
+    }
   } catch (e) {
     if (e.name === 'AbortError') { if (!asst.content) { asst.content = '(중지됨)'; asst.error = true; } }
     else { asst.error = true; asst.content = e.message; }
   } finally {
     if (raf) cancelAnimationFrame(raf);
-    delete asst.streaming;
+    delete asst.streaming; delete asst.tool;
     S.busy = false; S.abort = null;
     th.updatedAt = Date.now();
     await db.put('threads', th);
-    if (S.tab === 'chat') { viewChat(); }
+    if (S.tab === 'chat') viewChat();
+  }
+}
+
+async function resultAction(el) {
+  const th = curThread(), i = +el.dataset.mi, m = th.messages[i], res = m.result, op = el.dataset.op;
+  const v = resultView(res);
+  const userMsg = th.messages.slice(0, i).reverse().find(x => x.role === 'user');
+  const base = safeName(curProject().name);
+  const label = CHAT_MODES[res.mode].label;
+  const kindOf = { lore: 'lorebook', regex: 'regex', trigger: 'trigger', ui: 'ui', board: 'board' };
+  const persist = async () => { await db.put('threads', th); renderMsgs(); };
+  switch (op) {
+    case 'copy': return copyText(v.primary);
+    case 'dl': return download(`${base}_${label}${res.mode === 'lint' ? '_수정본' : res.mode === 'board' ? '' : '_' + (res.platform === 'st' ? '실리' : '리스')}.${v.ext}`, v.primary, v.ext === 'html' ? 'text/html' : 'application/json');
+    case 'dl-risu': return download(`${base}_상태창_리스.json`, JSON.stringify(studioExportFrom(res.ai, 'risu'), null, 2));
+    case 'dl-st': return download(`${base}_상태창_실리.json`, JSON.stringify(studioExportFrom(res.ai, 'st'), null, 2));
+    case 'fmt': return copyText(res.ai.promptFormat || '');
+    case 'expand': return htmlPreviewSheet(v.preview);
+    case 'swap': res.platform = res.platform === 'st' ? 'risu' : 'st'; return persist();
+    case 'inline': { const r = C.inlineCss(res.ai.html); res.ai.html = r.html; await persist(); return toast('인라인 변환 완료' + (r.warnings.length ? ` — 제외 ${r.warnings.length}건` : '')); }
+    case 'save': {
+      const t = await askTitle(res.ai?.name || res.ai?.title || `${label} — ${(userMsg?.content || '').slice(0, 16)}`);
+      return saveArtifact({ kind: kindOf[res.mode] || 'other', platform: res.platform || 'risu', title: t, content: res.mode === 'ui' ? JSON.stringify(res.ai, null, 2) : v.primary, meta: res.ai?.sample ? { sample: res.ai.sample } : {} });
+    }
+    case 'open': {
+      if (['lore', 'regex', 'trigger'].includes(res.mode)) {
+        const F = S.forge; F.kind = res.mode; F.platform = res.platform || 'risu';
+        F.inputs[res.mode] = { ...(F.inputs[res.mode] || {}), brief: userMsg?.content || '' };
+        F.result = { ai: structuredClone(res.ai), kind: res.mode }; rebuildForgeOutput(); return setTab('forge');
+      }
+      if (res.mode === 'ui') { S.studio.spec = structuredClone(res.ai); S.studio.platform = res.platform; S.studio.inputs.brief = userMsg?.content || ''; return setTab('studio'); }
+      if (res.mode === 'board') { S.board.spec = structuredClone(res.ai); return setTab('board'); }
+      S.lint.text = res.src; S.lint.mode = res.kind === 'board' ? 'board' : 'auto'; S.lint.platform = res.platform || 'risu'; setTab('lint'); return runLint();
+    }
+    case 'fix': {
+      try {
+        const f = L.autoFix(res.src, res.kind);
+        const r = res.kind === 'board' ? L.lint(f.text, 'board') : L.lint(f.text, 'auto', res.platform || 'risu');
+        th.messages.push({ role: 'assistant', content: lintSummaryText(r, f.notes), ts: Date.now(), result: { mode: 'lint', kind: r.kind, issues: r.issues, src: f.text, platform: res.platform, fixed: true, fixedNotes: f.notes } });
+        await db.put('threads', th); renderMsgs(true);
+      } catch (e) { toast(e.message, 'err'); }
+      return;
+    }
+    case 'askfix': {
+      th.mode = 'chat'; await db.put('threads', th);
+      S.pendingPrompt = `아래 작업물을 검사기가 지적한 문제에 맞게 고쳐 주세요.\n\n[검사 결과]\n${issuesText(res.issues)}\n\n[작업물]\n\`\`\`\n${res.src}\n\`\`\``;
+      return viewChat();
+    }
   }
 }
 
@@ -467,29 +692,29 @@ async function runForge(revise = null) {
     F.lastError = e.message;
   } finally { F.busy = false; if (S.tab === 'forge') viewForge(); }
 }
+function forgeOutputs(kind, ai, platform) {
+  const o = { notes: ai.notes };
+  if (kind === 'lore') {
+    const entries = ai.entries || (Array.isArray(ai) ? ai : []);
+    o.entries = entries;
+    o.outputs = platform === 'both'
+      ? { st: C.toStWorldInfo(entries), risu: C.toRisuLorebook(entries) }
+      : { [platform]: platform === 'st' ? C.toStWorldInfo(entries) : C.toRisuLorebook(entries) };
+  } else if (kind === 'regex') {
+    const rules = (ai.rules || []).map(x => ({ ...x }));
+    o.rules = rules; o.sample = ai.sample; o.warnings = [];
+    if (platform === 'st') o.outputs = { st: C.stRegexList(rules) };
+    else o.outputs = { risu: C.risuRegexFile(rules.map(x => ((x.kind || 'display') === 'display' && /<[a-z]/i.test(x.out)) ? { ...x, out: C.toRisuOut(x.out).out } : x)) };
+  } else {
+    o.buttons = ai.buttons;
+    o.outputs = { risu: ai.triggers || (Array.isArray(ai) ? ai : []) };
+  }
+  o.texts = Object.fromEntries(Object.entries(o.outputs).map(([k, v]) => [k, JSON.stringify(v, null, 2)]));
+  return o;
+}
 function rebuildForgeOutput() {
   const F = S.forge, r = F.result; if (!r) return;
-  const ai = r.ai;
-  if (r.kind === 'lore') {
-    const entries = ai.entries || (Array.isArray(ai) ? ai : []);
-    r.notes = ai.notes;
-    r.outputs = F.platform === 'both'
-      ? { st: C.toStWorldInfo(entries), risu: C.toRisuLorebook(entries) }
-      : { [F.platform]: F.platform === 'st' ? C.toStWorldInfo(entries) : C.toRisuLorebook(entries) };
-  } else if (r.kind === 'regex') {
-    const rules = (ai.rules || []).map(x => ({ ...x }));
-    r.notes = ai.notes; r.sample = ai.sample;
-    if (F.platform === 'st') r.outputs = { st: C.stRegexList(rules) };
-    else {
-      r.warnings = [];
-      const conv = rules.map(x => { if ((x.kind || 'display') === 'display' && /<[a-z]/i.test(x.out)) { const o = C.toRisuOut(x.out); r.warnings.push(...o.warnings); return { ...x, out: o.out }; } return x; });
-      r.outputs = { risu: C.risuRegexFile(conv) };
-    }
-  } else {
-    r.notes = ai.notes; r.buttons = ai.buttons;
-    r.outputs = { risu: ai.triggers || (Array.isArray(ai) ? ai : []) };
-  }
-  r.texts = Object.fromEntries(Object.entries(r.outputs).map(([k, v]) => [k, JSON.stringify(v, null, 2)]));
+  Object.assign(r, forgeOutputs(r.kind, r.ai, F.platform));
   r.view = Object.keys(r.texts)[0];
   r.issues = L.lint(r.texts[r.view]).issues;
 }
@@ -1203,9 +1428,9 @@ const ACTS = {
   'chat-prompts': () => {
     const ta = $('#prompt'); if (ta && ta.value) S.pendingPrompt = ta.value;
     openSheet({
-      title: '작업실 커스텀 프롬프트',
-      body: `<p class="note">켜 둔 프롬프트가 이 프로젝트의 모든 대화에 함께 전달돼요. <b>우선</b> 표시는 기본 규칙과 충돌할 때 우선하는 프롬프트예요.</p>${pickerHtml('chat')}<div class="row end"><button class="btn ghost small" data-act="tab" data-tab="settings" data-close>${ICON.gear} 프롬프트 관리</button></div>`,
-      onMount: (b) => bindPicker(b, 'chat'),
+      title: `커스텀 프롬프트 — ${CHAT_MODES[threadMode()].label} 모드`,
+      body: `<p class="note">켜 둔 프롬프트가 작업실의 ${esc(CHAT_MODES[threadMode()].label)} 모드 요청에 함께 전달돼요. <b>우선</b> 표시는 기본 규칙과 충돌할 때 우선하는 프롬프트예요.</p>${pickerHtml(threadMode())}<div class="row end"><button class="btn ghost small" data-act="tab" data-tab="settings" data-close>${ICON.gear} 프롬프트 관리</button></div>`,
+      onMount: (b) => bindPicker(b, threadMode()),
       onClose: () => { if (S.tab === 'chat') viewChat(); }
     });
   },
@@ -1216,7 +1441,12 @@ const ACTS = {
     const t = { id: uid(), projectId: S.pid, title: '새 대화', messages: [], createdAt: Date.now(), updatedAt: Date.now() };
     await db.put('threads', t); S.threads.unshift(t); S.tid = t.id; saveUi(); viewChat();
   },
-  suggest: (el) => { const s = SUGGEST[+el.dataset.i]; const ta = $('#prompt'); ta.value = s.p; ta.focus(); ta.setSelectionRange(s.p.length, s.p.length); ta.dispatchEvent(new Event('input')); },
+  suggest: async (el) => {
+    const s = SUGGEST[+el.dataset.i]; const th = curThread();
+    th.mode = s.mode; await db.put('threads', th); renderComposer();
+    const ta = $('#prompt'); ta.value = s.p; ta.focus(); ta.setSelectionRange(s.p.length, s.p.length); ta.dispatchEvent(new Event('input'));
+  },
+  res: (el) => resultAction(el),
   'msg-copy': (el) => copyText(curThread().messages[+el.dataset.mi].content),
   'msg-save': async (el) => { const m = curThread().messages[+el.dataset.mi]; const t = await askTitle(`메모 — ${curThread().title}`); await saveArtifact({ kind: 'other', platform: defaultPlatform(), title: t, content: m.content }); },
   'msg-del': async (el) => { const th = curThread(); th.messages.splice(+el.dataset.mi, 1); await db.put('threads', th); renderMsgs(); },
@@ -1224,14 +1454,16 @@ const ACTS = {
     if (S.busy) return;
     const th = curThread(); const i = +el.dataset.mi; const m = th.messages[i];
     if (!(await confirmSheet('이 메시지부터 아래 대화를 지우고 내용을 입력창으로 가져올까요?', '가져오기', false))) return;
-    th.messages.splice(i); await db.put('threads', th); S.pendingPrompt = m.content; viewChat();
+    th.messages.splice(i); if (m.mode) th.mode = m.mode; if (m.platform) th.platform = m.platform;
+    await db.put('threads', th); S.pendingPrompt = m.content; viewChat();
   },
   'msg-regen': async () => {
     if (S.busy) return;
     const th = curThread();
     while (th.messages.length && th.messages[th.messages.length - 1].role === 'assistant') th.messages.pop();
     if (!th.messages.length) return;
-    sendChat(th.messages[th.messages.length - 1].content, { replaceLast: true });
+    const u = th.messages[th.messages.length - 1];
+    sendChat(u.content, { replaceLast: true, mode: u.mode || 'chat', platform: u.platform, cont: u.cont });
   },
   code: async (el) => {
     const c = S.codes[+el.dataset.mi]?.[+el.dataset.ci]; if (!c) return;
