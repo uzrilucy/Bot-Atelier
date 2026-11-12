@@ -1,5 +1,5 @@
 // 앱 셸 캐시 — 릴리즈마다 CACHE 키를 올릴 것
-const CACHE = 'bot-atelier-v0.1.0';
+const CACHE = 'bot-atelier-v0.2.0';
 const SHELL = ['./', 'index.html', 'css/app.css', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png',
   'js/app.js', 'js/db.js', 'js/providers.js', 'js/knowledge.js', 'js/lint.js', 'js/convert.js', 'js/gen.js', 'js/md.js', 'js/icons.js'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });

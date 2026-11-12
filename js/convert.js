@@ -91,13 +91,13 @@ export function inlineCss(html, { dropClass = true } = {}) {
     el.setAttribute('style', [...merged].map(([p, d]) => `${p}:${d.val}${d.imp ? ' !important' : ''}`).join('; '));
   }
   if (dropClass) doc.body.querySelectorAll('[class]').forEach(el => el.removeAttribute('class'));
-  if (/animation\s*:/i.test(doc.body.innerHTML)) warnings.push('animation 속성이 남아 있어요 — 리스에서는 동작하지 않아요');
+  if (/animation\s*:/i.test(doc.body.innerHTML)) warnings.push('animation 속성이 남아 있어요 — 글꾸에서는 동작하지 않아요');
   return { html: doc.body.innerHTML, warnings, changed: true };
 }
 
+// 리스 out: 한 줄 압축 (\n → <br> 변환 방지). <style>·class 는 그대로 둠
 export function toRisuOut(html) {
-  const r = inlineCss(html);
-  return { out: minify(r.html), warnings: r.warnings };
+  return { out: minify(html), warnings: [] };
 }
 
 // ---------- 정규식 포맷 ----------

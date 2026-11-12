@@ -1,13 +1,13 @@
 import { db, uid } from './db.js';
 import * as P from './providers.js';
-import { DEFAULT_MODULES, DEFAULT_PERSONA, buildSystem, platformLabel } from './knowledge.js';
+import { DEFAULT_MODULES, DEFAULT_PERSONA, KB_VERSION, KB_MIGRATE, buildSystem, platformLabel } from './knowledge.js';
 import * as L from './lint.js';
 import * as C from './convert.js';
 import * as G from './gen.js';
 import { renderMd, esc } from './md.js';
 import { ICON, BRAND } from './icons.js';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const V = () => $('#view');
@@ -18,6 +18,7 @@ const S = {
   forge: { kind: 'lore', inputs: {}, result: null, busy: false },
   studio: { inputs: {}, spec: null, width: 412, bg: 'dark', pane: 'rules', busy: false, warnings: [] },
   lint: { text: '', mode: 'auto', platform: 'risu', result: null, fixed: null },
+  board: { inputs: { kind: '홍보', width: 700 }, spec: null, bg: 'light', busy: false },
   vaultAll: false
 };
 
@@ -25,6 +26,7 @@ const TABS = [
   { id: 'chat', label: '작업실', en: 'DESK', icon: 'chat' },
   { id: 'forge', label: '생성기', en: 'FORGE', icon: 'forge' },
   { id: 'studio', label: '상태창', en: 'STUDIO', icon: 'studio' },
+  { id: 'board', label: '글꾸', en: 'BOARD', icon: 'board' },
   { id: 'lint', label: '검사기', en: 'INSPECT', icon: 'lint' },
   { id: 'vault', label: '보관함', en: 'VAULT', icon: 'vault' }
 ];
@@ -107,7 +109,16 @@ async function boot() {
     if (S.settings[k] === undefined) S.settings[k] = def[k];
     else if (def[k] && typeof def[k] === 'object') S.settings[k] = { ...def[k], ...S.settings[k] };
   }
-  S.kb = (await db.get('kv', 'knowledge')) || { id: 'knowledge', modules: structuredClone(DEFAULT_MODULES) };
+  if (!Array.isArray(S.settings.customs)) S.settings.customs = [];
+  if (!S.settings.applied) S.settings.applied = {};
+  S.kb = (await db.get('kv', 'knowledge')) || { id: 'knowledge', version: KB_VERSION, modules: structuredClone(DEFAULT_MODULES) };
+  for (let v = (S.kb.version || 1) + 1; v <= KB_VERSION; v++) {
+    for (const id of KB_MIGRATE[v] || []) {
+      const def = DEFAULT_MODULES.find(m => m.id === id), cur = S.kb.modules.find(m => m.id === id);
+      if (def && cur) { cur.content = def.content; cur.scope = def.scope; cur.title = def.title; }
+    }
+    S.kb.version = v; await db.put('kv', S.kb);
+  }
   for (const m of DEFAULT_MODULES) if (!S.kb.modules.some(x => x.id === m.id) && !(S.kb.removed || []).includes(m.id)) S.kb.modules.push(structuredClone(m));
   S.projects = (await db.all('projects')).sort((a, b) => a.createdAt - b.createdAt);
   if (!S.projects.length) {
@@ -147,7 +158,7 @@ function renderChrome() {
 
 function setTab(tab) {
   S.tab = tab; saveUi(); renderChrome();
-  ({ chat: viewChat, forge: viewForge, studio: viewStudio, lint: viewLint, vault: viewVault, settings: viewSettings })[tab]();
+  ({ chat: viewChat, forge: viewForge, studio: viewStudio, board: viewBoard, lint: viewLint, vault: viewVault, settings: viewSettings })[tab]();
   V().scrollTop = 0;
 }
 
@@ -181,9 +192,9 @@ function issuesText(issues) {
 }
 
 // ───────────────────────── 보관함 저장 ─────────────────────────
-const KIND_LABEL = { lorebook: '로어북', regex: '정규식', trigger: '트리거', ui: '상태창', prompt: '프롬프트', html: 'HTML', other: '기타' };
+const KIND_LABEL = { lorebook: '로어북', regex: '정규식', trigger: '트리거', ui: '상태창', board: '글꾸', prompt: '프롬프트', html: 'HTML', other: '기타' };
 function kindFromLint(k) {
-  return { risuRegex: 'regex', stRegex: 'regex', risuTrigger: 'trigger', stLore: 'lorebook', risuLore: 'lorebook', html: 'html', prompt: 'prompt', board: 'html', card: 'other' }[k] || 'other';
+  return { risuRegex: 'regex', stRegex: 'regex', risuTrigger: 'trigger', stLore: 'lorebook', risuLore: 'lorebook', html: 'html', prompt: 'prompt', board: 'board', card: 'other' }[k] || 'other';
 }
 async function saveArtifact({ kind, platform, title, content, meta = {} }) {
   const all = await db.all('artifacts');
@@ -234,7 +245,8 @@ function viewChat() {
         <button type="submit" class="send ${S.busy ? 'busy' : ''}" id="send" aria-label="${S.busy ? '중지' : '보내기'}">${S.busy ? ICON.stop : ICON.send}</button>
       </div>
       <div class="composer-foot">
-        <button type="button" class="pill" data-act="tab" data-tab="settings">${ICON.book}<span>지식 ${S.kb.modules.filter(m => m.enabled).length}개 탑재</span></button>
+        <button type="button" class="pill" data-act="tab" data-tab="settings">${ICON.book}<span>지식 ${S.kb.modules.filter(m => m.enabled).length}</span></button>
+        <button type="button" class="pill ${customsFor('chat').length ? 'lit' : ''}" data-act="chat-prompts">${ICON.scroll}<span>프롬프트 ${customsFor('chat').length}</span></button>
         <button type="button" class="pill" data-act="tab" data-tab="settings">${ICON.link}<span>${esc(P.activeModelLabel(S.settings))}</span></button>
         <span class="grow"></span><span class="hint-key">Ctrl+Enter 전송</span>
       </div>
@@ -317,7 +329,7 @@ async function sendChat(text, { replaceLast = false } = {}) {
   };
   try {
     const system = buildSystem({ kb: S.kb, persona: S.settings.persona, project: curProject(), scope: 'chat',
-      extra: '# 응답 방식\n요청을 분석해 캐릭터·봇 기획 / UI·상태창 디자인 / 코딩·시스템 / 스토리 창작 중 맞는 관점으로 답하고, 복합 요청이면 관점을 연결하세요. 결론부터.' });
+      extra: '# 응답 방식\n요청을 분석해 캐릭터·봇 기획 / UI·상태창 디자인 / 코딩·시스템 / 스토리 창작 / 게시판 글꾸 중 맞는 관점으로 답하고, 복합 요청이면 관점을 연결하세요. 결론부터.', customs: customsFor('chat') });
     await P.chat({ system, messages: hist, cfg: S.settings, signal: S.abort.signal, onDelta: (_, full) => { asst.content = full; if (!raf) raf = requestAnimationFrame(paint); } });
     asst.model = S.settings[S.settings.active]?.model;
   } catch (e) {
@@ -384,8 +396,8 @@ function projectSheet() {
 }
 
 // ───────────────────────── AI 공통 호출 (생성기·스튜디오) ─────────────────────────
-async function runTask(task, scope, onDelta) {
-  const system = buildSystem({ kb: S.kb, persona: S.settings.persona, project: curProject(), scope, extra: task.extra });
+async function runTask(task, scope, onDelta, target) {
+  const system = buildSystem({ kb: S.kb, persona: S.settings.persona, project: curProject(), scope, extra: task.extra, customs: target ? customsFor(target) : [] });
   return P.chat({ system, messages: [{ role: 'user', content: task.user }], cfg: { ...S.settings, temperature: Math.min(Number(S.settings.temperature), 1) }, onDelta });
 }
 function progressHtml(label) {
@@ -395,6 +407,7 @@ const progDelta = (_, full) => { const el = $('#prog-count'); if (el) el.textCon
 
 // ───────────────────────── 2. 생성기 ─────────────────────────
 const FORGE_KINDS = { lore: '로어북', regex: '정규식', trigger: '트리거' };
+const FORGE_TARGET = { lore: 'lore', regex: 'regex', trigger: 'trigger' };
 function viewForge() {
   const F = S.forge;
   F.platform = F.platform || defaultPlatform();
@@ -415,11 +428,13 @@ function viewForge() {
       <div class="seg big" data-seg="forge-kind">${Object.entries(FORGE_KINDS).map(([k, l]) => `<button type="button" class="${F.kind === k ? 'on' : ''}" data-v="${k}">${l}</button>`).join('')}</div>
       ${F.kind !== 'trigger' ? `<div class="field"><span>대상 플랫폼</span>${platformSelect('forge-plat', F.platform, F.kind === 'lore')}</div>` : ''}
       ${form}
+      ${pickerHtml(FORGE_TARGET[F.kind])}
       <div class="row end"><button class="btn primary" id="f-go" ${F.busy ? 'disabled' : ''}>${ICON.spark} ${F.busy ? '생성 중…' : '생성하기'}</button></div>
     </div>
     <div id="forge-out">${F.busy ? progressHtml(`${FORGE_KINDS[F.kind]} 벼리는 중`) : forgeResultHtml()}</div>
   </section>`;
   const root = V();
+  bindPicker(root, FORGE_TARGET[F.kind]);
   bindSeg(root, 'forge-kind', v => { captureForge(); F.kind = v; F.result = null; viewForge(); });
   bindSeg(root, 'forge-plat', v => { F.platform = v; if (F.result) { rebuildForgeOutput(); $('#forge-out').innerHTML = forgeResultHtml(); bindForgeResult(); } });
   $('#f-go').onclick = () => runForge();
@@ -442,7 +457,7 @@ async function runForge(revise = null) {
   else task = G.triggerTask({ brief: inp.brief });
   F.busy = true; viewForge();
   try {
-    const raw = await runTask(task, 'gen', progDelta);
+    const raw = await runTask(task, 'gen', progDelta, FORGE_TARGET[F.kind]);
     const ai = G.extractJson(raw);
     F.result = { ai, raw, kind: F.kind };
     rebuildForgeOutput();
@@ -504,7 +519,7 @@ function forgeResultHtml() {
   </div>`;
 }
 function bindForgeResult() {
-  const F = S.forge, r = F.result; if (!r) return;
+  const F = S.forge, r = F.result; if (!r || F.busy) return;
   const root = $('#forge-out');
   bindSeg(root, 'forge-view', v => { r.texts[r.view] = $('#forge-json').value; r.view = v; r.issues = L.lint(r.texts[v]).issues; root.innerHTML = forgeResultHtml(); bindForgeResult(); });
   const ta = $('#forge-json');
@@ -571,11 +586,13 @@ function viewStudio() {
         <label class="field inline grow"><span>필드 (선택)</span><input id="s-fields" placeholder="이름, 날짜, 장소, 호감도, 소지품(칩)…" value="${esc(inp.fields || '')}"></label>
       </div>
       <label class="field"><span>분위기 키워드 (선택)</span><input id="s-mood" placeholder="한지 질감, 먹번짐, 은은한 붉은 발광" value="${esc(inp.mood || '')}"></label>
+      ${pickerHtml('ui')}
       <div class="row between wrap"><button class="btn ghost" id="s-import">${ICON.upload} 기존 정규식 불러와 미리보기</button><button class="btn primary" id="s-go" ${T.busy ? 'disabled' : ''}>${ICON.spark} ${T.busy ? '디자인 중…' : '디자인 생성'}</button></div>
     </div>
     <div id="studio-out">${T.busy ? progressHtml('상태창 디자인 중 — 길게 걸릴 수 있어요') : studioResultHtml()}</div>
   </section>`;
   const root = V();
+  bindPicker(root, 'ui');
   bindSeg(root, 'st-plat', v => { T.platform = v; if (T.spec) { refreshStudio(true); } });
   $('#s-go').onclick = () => runStudio();
   $('#s-import').onclick = studioImportSheet;
@@ -592,7 +609,7 @@ async function runStudio(revise = null) {
     : G.uiTask({ platform: T.platform, brief: T.inputs.brief, tag: T.inputs.tag?.trim(), fields: T.inputs.fields, mood: T.inputs.mood });
   T.busy = true; viewStudio();
   try {
-    const raw = await runTask(task, 'ui', progDelta);
+    const raw = await runTask(task, 'ui', progDelta, 'ui');
     const spec = G.extractJson(raw);
     if (!Array.isArray(spec.rules) || !spec.rules.length) throw new Error('응답에 정규식(rules)이 없어요. 다시 시도해 주세요.');
     T.spec = spec; T.lastError = null;
@@ -618,7 +635,7 @@ function studioResultHtml() {
     <div class="frame-tools">
       <div class="seg small" data-seg="s-width">${[360, 412, 600].map(w => `<button type="button" class="${T.width === w ? 'on' : ''}" data-v="${w}">${w}</button>`).join('')}</div>
       <div class="seg small" data-seg="s-bg"><button type="button" class="${T.bg === 'dark' ? 'on' : ''}" data-v="dark">어둡게</button><button type="button" class="${T.bg === 'light' ? 'on' : ''}" data-v="light">밝게</button></div>
-      <span class="grow"></span><span class="note">${T.platform === 'risu' ? '리스 변환본(인라인·압축)으로 렌더' : '실리 방식으로 렌더'}</span>
+      <span class="grow"></span><span class="note">${T.platform === 'risu' ? '리스 변환본(한 줄 압축)으로 렌더' : '실리 방식으로 렌더'}</span>
     </div>
     <div class="frame-stage"><div class="frame-wrap" style="width:${T.width}px"><iframe id="s-frame" sandbox="" title="상태창 미리보기"></iframe></div></div>
     <ul class="conv-warn" id="s-err">${T.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>
@@ -656,7 +673,7 @@ function refreshStudio(full = false) {
   else drawStudio();
 }
 function bindStudioResult() {
-  const T = S.studio; if (!T.spec) return;
+  const T = S.studio; if (!T.spec || T.busy) return;
   const root = $('#studio-out');
   bindSeg(root, 's-width', v => { T.width = +v; $('.frame-wrap', root).style.width = v + 'px'; });
   bindSeg(root, 's-bg', v => { T.bg = v; drawStudio(); });
@@ -702,7 +719,7 @@ function studioImportSheet() {
 function viewLint() {
   const T = S.lint;
   V().innerHTML = `<section class="page">
-    ${secHead('04', 'INSPECT', '규칙 검사기', '룽님이 확립한 규칙으로 정규식·트리거·로어북·카드·프롬프트·글꾸를 점검해요. AI 호출 없이 이 기기에서만 돌아가요.')}
+    ${secHead('05', 'INSPECT', '규칙 검사기', '확립된 규칙으로 정규식·트리거·로어북·카드·프롬프트·글꾸를 점검해요. AI 호출 없이 이 기기에서만 돌아가요.')}
     <div class="card">
       <div class="row wrap">
         <label class="field inline"><span>종류</span><select id="l-mode">${Object.entries(L.KINDS).map(([k, l]) => `<option value="${k}" ${T.mode === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
@@ -758,7 +775,7 @@ async function viewVault() {
   const all = (await db.all('artifacts')).filter(a => S.vaultAll || a.projectId === S.pid).sort((a, b) => b.updatedAt - a.updatedAt);
   const pname = (id) => S.projects.find(p => p.id === id)?.name || '';
   V().innerHTML = `<section class="page">
-    ${secHead('05', 'VAULT', '보관함', '같은 이름으로 저장하면 이전 내용은 버전 기록으로 쌓여요. 언제든 되돌릴 수 있어요.')}
+    ${secHead('06', 'VAULT', '보관함', '같은 이름으로 저장하면 이전 내용은 버전 기록으로 쌓여요. 언제든 되돌릴 수 있어요.')}
     <div class="row between"><div class="seg small" data-seg="v-scope"><button type="button" class="${!S.vaultAll ? 'on' : ''}" data-v="cur">이 프로젝트</button><button type="button" class="${S.vaultAll ? 'on' : ''}" data-v="all">전체</button></div><button class="btn ghost small" id="v-import">${ICON.upload} 파일 가져오기</button></div>
     ${all.length ? `<div class="vault-grid">${all.map(a => `<button class="vault-card" data-aid="${a.id}">
         <div class="vc-top"><span class="kind k-${a.kind}">${KIND_LABEL[a.kind] || a.kind}</span><span class="plat-mini">${a.platform === 'st' ? '실리' : a.platform === 'risu' ? '리스' : ''}</span>${(a.history || []).length ? `<span class="ver">v${a.history.length + 1}</span>` : ''}</div>
@@ -786,7 +803,8 @@ async function artifactSheet(id) {
       <button class="btn" id="a-lintbtn">${ICON.lint} 검사</button>
       ${isUi ? `<button class="btn" id="a-studio">${ICON.studio} 스튜디오에서 열기</button>` : ''}
       ${a.kind === 'regex' ? `<button class="btn" id="a-prev">${ICON.eye} 렌더</button>` : ''}
-      ${a.kind === 'html' ? `<button class="btn" id="a-hprev">${ICON.eye} 미리보기</button>` : ''}
+      ${a.kind === 'html' || a.kind === 'board' ? `<button class="btn" id="a-hprev">${ICON.eye} 미리보기</button>` : ''}
+      ${a.kind === 'board' ? `<button class="btn" id="a-board">${ICON.board} 글꾸에서 열기</button>` : ''}
       <button class="btn" id="a-copy">${ICON.copy} 복사</button>
       <button class="btn" id="a-dl">${ICON.download} 받기</button>
       <button class="btn primary" id="a-save">${ICON.check} 새 버전으로 저장</button>
@@ -796,7 +814,7 @@ async function artifactSheet(id) {
   openSheet({
     title: a.title, wide: true, body, onMount: (b, close) => {
       const ta = $('#a-content', b);
-      $('#a-lintbtn', b).onclick = () => { const r = L.lint(isUi ? JSON.stringify(studioExportFrom(JSON.parse(ta.value), a.platform)) : ta.value); $('#a-lint', b).innerHTML = issuesHtml(r.issues, { compact: true }); };
+      $('#a-lintbtn', b).onclick = () => { const r = L.lint(isUi ? JSON.stringify(studioExportFrom(JSON.parse(ta.value), a.platform)) : ta.value, a.kind === 'board' ? 'board' : 'auto', a.platform); $('#a-lint', b).innerHTML = issuesHtml(r.issues, { compact: true }); };
       $('#a-copy', b).onclick = () => copyText(ta.value);
       $('#a-dl', b).onclick = () => { const json = /^\s*[\[{]/.test(ta.value); download(`${safeName(a.title)}.${isUi ? 'json' : json ? 'json' : a.kind === 'html' ? 'html' : 'txt'}`, isUi ? JSON.stringify(studioExportFrom(JSON.parse(ta.value), a.platform), null, 2) : ta.value, json ? 'application/json' : 'text/plain'); };
       $('#a-save', b).onclick = async () => {
@@ -813,6 +831,7 @@ async function artifactSheet(id) {
       });
       if ($('#a-prev', b)) $('#a-prev', b).onclick = () => { try { regexPreviewSheet(JSON.parse(ta.value), a.meta?.sample || '', a.platform); } catch (e) { toast(e.message, 'err'); } };
       if ($('#a-hprev', b)) $('#a-hprev', b).onclick = () => htmlPreviewSheet(ta.value);
+      if ($('#a-board', b)) $('#a-board', b).onclick = () => { S.board.spec = { title: a.title, html: ta.value, notes: '' }; close(); setTab('board'); };
       if ($('#a-studio', b)) $('#a-studio', b).onclick = () => { try { S.studio.spec = JSON.parse(ta.value); S.studio.platform = a.platform; close(); setTab('studio'); } catch (e) { toast(e.message, 'err'); } };
     }
   });
@@ -858,13 +877,15 @@ function viewSettings() {
 
     <div class="card">
       <div class="card-title">${ICON.book}<h2>지식 팩</h2><span class="grow"></span><span class="count">${S.kb.modules.filter(m => m.enabled).length}/${S.kb.modules.length}</span></div>
-      <p class="note">켜진 지식만 AI에 전달돼요. 범위(채팅/생성/상태창/검사)에 맞는 기능에서만 쓰여요.</p>
+      <p class="note">켜진 지식만 AI에 전달돼요. 범위(채팅/생성/상태창/글꾸)에 맞는 기능에서만 쓰여요.</p>
       <div class="kb-list">${S.kb.modules.map((m, i) => `<div class="kb-row ${m.enabled ? '' : 'off'}">
         <label class="switch"><input type="checkbox" data-kb-toggle="${i}" ${m.enabled ? 'checked' : ''}><i></i></label>
-        <button class="kb-main" data-kb-edit="${i}"><b>${esc(m.title)}</b><small>${(m.scope || []).map(s => ({ chat: '채팅', gen: '생성', ui: '상태창', lint: '검사' }[s])).join(' · ')} · ${m.content.length}자</small></button>
+        <button class="kb-main" data-kb-edit="${i}"><b>${esc(m.title)}</b><small>${(m.scope || []).map(s => ({ chat: '채팅', gen: '생성', ui: '상태창', board: '글꾸', lint: '검사' }[s])).join(' · ')} · ${m.content.length}자</small></button>
         <button class="icon-btn" data-kb-edit="${i}" aria-label="편집">${ICON.edit}</button></div>`).join('')}</div>
       <div class="row wrap"><button class="btn ghost small" id="kb-add">${ICON.plus} 새 지식</button><button class="btn ghost small" id="kb-export">${ICON.download} 내보내기</button><button class="btn ghost small" id="kb-import">${ICON.upload} 가져오기</button><span class="grow"></span><button class="btn ghost small" id="kb-reset">${ICON.refresh} 기본값 복원</button></div>
     </div>
+
+    ${customsCardHtml()}
 
     <div class="card">
       <div class="card-title">${ICON.spark}<h2>파트너 페르소나</h2></div>
@@ -898,6 +919,7 @@ function viewSettings() {
       out.textContent = `✓ ${Math.round(performance.now() - t0)}ms · “${r.trim().slice(0, 30)}”`; out.className = 'note ok';
     } catch (e) { out.textContent = e.message; out.className = 'note err'; }
   };
+  bindCustomsCard(root);
   $('#persona').addEventListener('input', e => { st.persona = e.target.value; saveSettings(); });
   root.addEventListener('change', async e => {
     const t = e.target.closest('[data-kb-toggle]'); if (!t) return;
@@ -942,7 +964,7 @@ function mergeKeys(ns, old) { const c = structuredClone(ns); for (const p of Obj
 
 function kbEditSheet(i, isNew = false) {
   const m = S.kb.modules[i];
-  const scopes = [['chat', '채팅'], ['gen', '생성기'], ['ui', '상태창'], ['lint', '검사']];
+  const scopes = [['chat', '채팅'], ['gen', '생성기'], ['ui', '상태창'], ['board', '글꾸'], ['lint', '검사']];
   openSheet({
     title: isNew ? '새 지식' : '지식 편집', wide: true,
     body: `<label class="field"><span>제목</span><input id="kb-title" value="${esc(m.title)}"></label>
@@ -967,9 +989,227 @@ function kbEditSheet(i, isNew = false) {
   });
 }
 
+
+// ───────────────────────── 커스텀 프롬프트 ─────────────────────────
+const TARGETS = { chat: '작업실', lore: '로어북', regex: '정규식', trigger: '트리거', ui: '상태창', board: '글꾸' };
+function customsFor(target) {
+  const list = S.settings.customs || [];
+  const ap = S.settings.applied?.[target];
+  return list.filter(c => (c.targets || []).includes(target) && (ap ? ap.includes(c.id) : c.auto !== false));
+}
+function pickerHtml(target) {
+  const list = (S.settings.customs || []).filter(c => (c.targets || []).includes(target));
+  const on = new Set(customsFor(target).map(c => c.id));
+  return `<div class="picker" data-picker="${target}">
+    <span class="picker-label">${ICON.scroll}<span>커스텀 프롬프트</span></span>
+    ${list.map(c => `<button type="button" class="pchip ${on.has(c.id) ? 'on' : ''}" data-pc="${c.id}" title="${esc(c.content.slice(0, 120))}">${c.mode === 'priority' ? '<i>우선</i>' : ''}<span>${esc(c.title)}</span></button>`).join('')}
+    <button type="button" class="pchip add" data-act="custom-new" data-target="${target}">${ICON.plus}<span>${list.length ? '추가' : '만들기'}</span></button>
+  </div>`;
+}
+function bindPicker(root, target) {
+  const el = $(`[data-picker="${target}"]`, root); if (!el) return;
+  el.addEventListener('click', e => {
+    const b = e.target.closest('[data-pc]'); if (!b) return;
+    const cur = customsFor(target).map(c => c.id);
+    const id = b.dataset.pc;
+    S.settings.applied = { ...(S.settings.applied || {}), [target]: cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id] };
+    saveSettings(); b.classList.toggle('on');
+  });
+}
+function captureCurrent() {
+  if (S.tab === 'forge' && $('#f-brief')) captureForge();
+  if (S.tab === 'studio' && $('#s-brief')) captureStudio();
+  if (S.tab === 'board' && $('#b-body')) captureBoard();
+  if (S.tab === 'chat' && $('#prompt')?.value) S.pendingPrompt = $('#prompt').value;
+}
+function rerender() { captureCurrent(); const y = V().scrollTop; setTab(S.tab); V().scrollTop = y; }
+
+function customEditSheet(id, presetTarget) {
+  const isNew = !id;
+  const c = isNew ? { id: 'cp-' + Date.now().toString(36), title: '', content: '', targets: presetTarget ? [presetTarget] : ['chat'], mode: 'append', auto: true }
+    : structuredClone(S.settings.customs.find(x => x.id === id));
+  openSheet({
+    title: isNew ? '새 커스텀 프롬프트' : '커스텀 프롬프트 편집', wide: true,
+    body: `<label class="field"><span>이름</span><input id="cp-title" value="${esc(c.title)}" placeholder="예) 무협 문체 가이드 / 내 상태창 취향 / 멜 페르소나"></label>
+      <div class="field"><span>적용할 곳</span><div class="checks">${Object.entries(TARGETS).map(([k, l]) => `<label class="check"><input type="checkbox" value="${k}" ${c.targets.includes(k) ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div></div>
+      <div class="field"><span>방식</span><div class="seg small" data-seg="cp-mode"><button type="button" class="${c.mode !== 'priority' ? 'on' : ''}" data-v="append">추가 — 기본 규칙과 함께</button><button type="button" class="${c.mode === 'priority' ? 'on' : ''}" data-v="priority">우선 — 충돌 시 이 지시가 이김</button></div></div>
+      <label class="check"><input type="checkbox" id="cp-auto" ${c.auto !== false ? 'checked' : ''}><span>새로 만들면 해당 기능에서 자동으로 켜기</span></label>
+      <label class="field"><span>프롬프트 내용</span><textarea id="cp-content" class="code-area" rows="14" spellcheck="false" placeholder="AI에게 그대로 전달돼요. 출력 형식(JSON)은 앱이 따로 지정하므로 내용·스타일·취향 위주로 쓰면 좋아요.">${esc(c.content)}</textarea></label>
+      <div class="row wrap"><button class="btn ghost small" id="cp-file">${ICON.upload} 파일에서 내용 불러오기</button><span class="grow"></span><span class="note mono" id="cp-len">${c.content.length}자</span></div>
+      <div class="row between">${isNew ? '<span></span>' : `<button class="btn danger ghost" id="cp-del">${ICON.trash} 삭제</button>`}<button class="btn primary" id="cp-save">${ICON.check} 저장</button></div>`,
+    onMount: (b, close) => {
+      let mode = c.mode;
+      bindSeg(b, 'cp-mode', v => mode = v);
+      const ta = $('#cp-content', b);
+      ta.addEventListener('input', () => $('#cp-len', b).textContent = ta.value.length + '자');
+      $('#cp-file', b).onclick = async () => { const f = await readFile('.txt,.md,.json'); if (!f) return; ta.value = f.text; ta.dispatchEvent(new Event('input')); if (!$('#cp-title', b).value) $('#cp-title', b).value = f.name.replace(/\.\w+$/, ''); };
+      $('#cp-save', b).onclick = async () => {
+        c.title = $('#cp-title', b).value.trim() || '이름 없는 프롬프트';
+        c.content = ta.value; c.mode = mode; c.auto = $('#cp-auto', b).checked;
+        c.targets = $$('.checks input:checked', b).map(x => x.value);
+        if (!c.content.trim()) return toast('내용을 입력해 주세요', 'err');
+        if (!c.targets.length) return toast('적용할 곳을 하나 이상 골라 주세요', 'err');
+        const list = S.settings.customs;
+        const i = list.findIndex(x => x.id === c.id);
+        if (i >= 0) list[i] = c; else list.push(c);
+        if (isNew && c.auto) for (const t of c.targets) if (S.settings.applied[t]) S.settings.applied[t] = [...S.settings.applied[t], c.id];
+        saveSettings(); close(); toast('커스텀 프롬프트를 저장했어요'); rerender();
+      };
+      if ($('#cp-del', b)) $('#cp-del', b).onclick = async () => {
+        if (!(await confirmSheet(`“${c.title}” 프롬프트를 삭제할까요?`, '삭제'))) return;
+        S.settings.customs = S.settings.customs.filter(x => x.id !== c.id);
+        for (const t of Object.keys(S.settings.applied)) S.settings.applied[t] = S.settings.applied[t].filter(x => x !== c.id);
+        saveSettings(); close(); rerender();
+      };
+    }
+  });
+}
+function customsCardHtml() {
+  const list = S.settings.customs || [];
+  return `<div class="card">
+    <div class="card-title">${ICON.scroll}<h2>커스텀 프롬프트</h2><span class="grow"></span><span class="count">${list.length}</span></div>
+    <p class="note">내 프롬프트를 기능별로 적용해요. 각 화면의 “커스텀 프롬프트” 칩으로 그때그때 켜고 끌 수 있어요.</p>
+    ${list.length ? `<div class="kb-list">${list.map(c => `<div class="kb-row"><button class="kb-main" data-cp-edit="${c.id}"><b>${c.mode === 'priority' ? '<span class="tag-pri">우선</span> ' : ''}${esc(c.title)}</b><small>${c.targets.map(t => TARGETS[t]).join(' · ')} · ${c.content.length}자</small></button><button class="icon-btn" data-cp-edit="${c.id}" aria-label="편집">${ICON.edit}</button></div>`).join('')}</div>` : '<div class="empty-mini">아직 없어요. 자주 쓰는 지시문·문체 가이드·페르소나를 등록해 보세요.</div>'}
+    <div class="row wrap"><button class="btn ghost small" data-act="custom-new">${ICON.plus} 새 프롬프트</button><button class="btn ghost small" id="cp-import">${ICON.upload} 가져오기</button>${list.length ? `<button class="btn ghost small" id="cp-export">${ICON.download} 내보내기</button>` : ''}</div>
+  </div>`;
+}
+function bindCustomsCard(root) {
+  $$('[data-cp-edit]', root).forEach(b => b.onclick = () => customEditSheet(b.dataset.cpEdit));
+  if ($('#cp-export', root)) $('#cp-export', root).onclick = () => download('봇아틀리에_커스텀프롬프트.json', JSON.stringify({ type: 'bot-atelier-prompts', version: 1, prompts: S.settings.customs }, null, 2));
+  $('#cp-import', root).onclick = async () => {
+    const f = await readFile('.json,.txt,.md'); if (!f) return;
+    try {
+      let items;
+      if (/\.json$/i.test(f.name)) { const j = JSON.parse(f.text); items = j.prompts || j; if (!Array.isArray(items)) throw new Error('prompts 배열이 없어요'); }
+      else items = [{ id: 'cp-' + Date.now().toString(36), title: f.name.replace(/\.\w+$/, ''), content: f.text, targets: ['chat'], mode: 'append', auto: true }];
+      for (const it of items) {
+        if (!it.id || !it.content) continue;
+        const i = S.settings.customs.findIndex(x => x.id === it.id);
+        if (i >= 0) S.settings.customs[i] = it; else S.settings.customs.push({ targets: ['chat'], mode: 'append', auto: true, ...it });
+      }
+      saveSettings(); viewSettings(); toast(`프롬프트 ${items.length}개를 가져왔어요`);
+      if (items.length === 1 && !/\.json$/i.test(f.name)) customEditSheet(items[0].id);
+    } catch (e) { toast(e.message, 'err'); }
+  };
+}
+
+// ───────────────────────── 글꾸 공방 ─────────────────────────
+const BOARD_KINDS = ['홍보', '공지', '업데이트', '자유'];
+function viewBoard() {
+  const B = S.board, inp = B.inputs;
+  V().innerHTML = `<section class="page">
+    ${secHead('04', 'BOARD', '글꾸 공방', '배포 게시판 규칙(순수 인라인·SMIL 애니메이션·불투명 배경·이미지 고정폭·우는 이모티콘 금지)을 지키는 게시글 꾸밈을 만들어요.')}
+    <div class="card">
+      <div class="field"><span>글 종류</span><div class="seg" data-seg="b-kind">${BOARD_KINDS.map(k => `<button type="button" class="${inp.kind === k ? 'on' : ''}" data-v="${k}">${k}</button>`).join('')}</div></div>
+      <label class="field"><span>본문 내용 — 게시글에 들어갈 글 (내용은 그대로, 꾸밈만 입혀요)</span><textarea id="b-body" rows="7" placeholder="봇 소개, 특징, 플레이 팁, 업데이트 내역 등">${esc(inp.body || '')}</textarea></label>
+      <label class="field"><span>컨셉 · 분위기 (선택)</span><textarea id="b-concept" rows="3" placeholder="예) 조선 무속 호러 — 한지, 먹, 붉은 실, 은은한 촛불">${esc(inp.concept || '')}</textarea></label>
+      <div class="row wrap">
+        <label class="field grow"><span>이미지 (한 줄에 하나: URL | 설명)</span><textarea id="b-images" rows="2" placeholder="https://… | 대표 이미지">${esc(inp.images || '')}</textarea></label>
+        <label class="field inline"><span>기준 폭(px)</span><input id="b-width" type="number" min="280" max="1200" step="10" value="${esc(inp.width || 700)}"></label>
+      </div>
+      ${pickerHtml('board')}
+      <div class="row between wrap"><button class="btn ghost" id="b-import">${ICON.upload} 기존 HTML 불러와 검사·변환</button><button class="btn primary" id="b-go" ${B.busy ? 'disabled' : ''}>${ICON.spark} ${B.busy ? '꾸미는 중…' : '글꾸 생성'}</button></div>
+    </div>
+    <div id="board-out">${B.busy ? progressHtml('게시글 꾸미는 중') : boardResultHtml()}</div>
+  </section>`;
+  const root = V();
+  bindSeg(root, 'b-kind', v => B.inputs.kind = v);
+  bindPicker(root, 'board');
+  $('#b-go').onclick = () => runBoard();
+  $('#b-import').onclick = boardImportSheet;
+  bindBoardResult();
+}
+function captureBoard() {
+  const i = S.board.inputs;
+  i.body = $('#b-body')?.value ?? i.body; i.concept = $('#b-concept')?.value ?? i.concept;
+  i.images = $('#b-images')?.value ?? i.images; i.width = Number($('#b-width')?.value) || i.width || 700;
+}
+async function runBoard(revise = null) {
+  const B = S.board; captureBoard();
+  if (!revise && !B.inputs.body?.trim()) return toast('본문 내용을 입력해 주세요', 'err');
+  const task = revise ? G.reviseTask('게시판 글꾸', revise.json, revise.feedback, revise.issues) : G.boardTask(B.inputs);
+  B.busy = true; viewBoard();
+  try {
+    const spec = G.extractJson(await runTask(task, 'board', progDelta, 'board'));
+    if (!spec.html) throw new Error('응답에 html 이 없어요. 다시 시도해 주세요.');
+    B.spec = spec; B.lastError = null;
+  } catch (e) { toast(e.message, 'err'); B.lastError = e.message; }
+  finally { B.busy = false; if (S.tab === 'board') viewBoard(); }
+}
+function boardResultHtml() {
+  const B = S.board, sp = B.spec;
+  if (!sp) return B.lastError ? `<div class="card error-card"><b>생성 실패</b><p>${esc(B.lastError)}</p></div>` : '';
+  B.issues = L.lintBoard(sp.html);
+  const w = B.inputs.width || 700;
+  return `<div class="card result">
+    <div class="result-head"><div class="sec-label"><span class="en">PREVIEW</span></div><h2>${esc(sp.title || '글꾸')}</h2></div>
+    ${sp.notes ? `<div class="notes">${renderMd(sp.notes).html}</div>` : ''}
+    <div class="frame-tools"><div class="seg small" data-seg="b-bg"><button type="button" class="${B.bg === 'light' ? 'on' : ''}" data-v="light">밝은 게시판</button><button type="button" class="${B.bg === 'dark' ? 'on' : ''}" data-v="dark">어두운 게시판</button></div><span class="grow"></span><span class="note mono">${w}px</span></div>
+    <div class="frame-stage"><div class="frame-wrap" style="width:${w}px"><iframe id="b-frame" sandbox="" title="글꾸 미리보기"></iframe></div></div>
+    <div class="lint-box" id="b-lint">${issuesHtml(B.issues, { compact: true })}</div>
+    <label class="field"><span>HTML — 고치면 미리보기·검사에 바로 반영돼요</span><textarea id="b-html" class="code-area" rows="12" spellcheck="false">${esc(sp.html)}</textarea></label>
+    <div class="row wrap">
+      <button class="btn" id="b-inline">${ICON.wand} 인라인 변환</button>
+      <button class="btn" id="b-save">${ICON.vault} 보관</button>
+      <button class="btn" id="b-dl">${ICON.download} HTML 받기</button>
+      <button class="btn primary" id="b-copy">${ICON.copy} 복사</button>
+    </div>
+    <div class="revise">
+      <label class="field"><span>수정 요청</span><textarea id="b-fb" rows="3" placeholder="예) 제목을 더 크게 / 특징 목록을 카드형으로 / 전체 톤을 더 차분하게"></textarea></label>
+      <div class="row end"><button class="btn" id="b-revise">${ICON.wand} 수정 요청 보내기</button></div>
+    </div>
+  </div>`;
+}
+function drawBoard() {
+  const B = S.board, f = $('#b-frame'); if (!f || !B.spec) return;
+  f.srcdoc = C.previewDoc(B.spec.html, { bg: B.bg });
+}
+function bindBoardResult() {
+  const B = S.board; if (!B.spec || B.busy) return;
+  const root = $('#board-out');
+  bindSeg(root, 'b-bg', v => { B.bg = v; drawBoard(); });
+  const ta = $('#b-html');
+  const relint = () => { B.issues = L.lintBoard(B.spec.html); $('#b-lint').innerHTML = issuesHtml(B.issues, { compact: true }); };
+  ta.addEventListener('input', debounce(() => { B.spec.html = ta.value; drawBoard(); relint(); }, 300));
+  $('#b-inline').onclick = () => {
+    const r = C.inlineCss(ta.value);
+    if (!r.changed) return toast('변환할 <style> 이 없어요');
+    ta.value = B.spec.html = r.html; drawBoard(); relint();
+    toast('인라인 변환 완료' + (r.warnings.length ? ` — 주의 ${r.warnings.length}건` : ''));
+    if (r.warnings.length) $('#b-lint').insertAdjacentHTML('afterbegin', `<ul class="conv-warn">${r.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>`);
+  };
+  $('#b-copy').onclick = () => copyText(ta.value);
+  $('#b-dl').onclick = () => download(`${safeName(B.spec.title || curProject().name)}_글꾸.html`, ta.value, 'text/html');
+  $('#b-save').onclick = async () => { const t = await askTitle(B.spec.title || '글꾸'); await saveArtifact({ kind: 'board', platform: defaultPlatform(), title: t, content: ta.value }); };
+  $('#b-revise').onclick = () => runBoard({ json: JSON.stringify(B.spec, null, 2), feedback: $('#b-fb').value.trim(), issues: issuesText(B.issues || []) });
+  drawBoard();
+}
+function boardImportSheet() {
+  openSheet({
+    title: '기존 글꾸 불러오기', wide: true,
+    body: `<p class="note">붙여넣은 HTML을 글꾸 규칙으로 검사하고, &lt;style&gt;·class 가 있으면 인라인 변환할 수 있어요.</p>
+      <label class="field"><span>HTML</span><textarea id="bi-html" class="code-area" rows="12" spellcheck="false"></textarea></label>
+      <div class="row between"><button class="btn ghost small" id="bi-file">${ICON.upload} 파일에서 열기</button><button class="btn primary" id="bi-ok">${ICON.check} 불러오기</button></div>`,
+    onMount: (b, close) => {
+      $('#bi-file', b).onclick = async () => { const f = await readFile('.html,.htm,.txt'); if (f) $('#bi-html', b).value = f.text; };
+      $('#bi-ok', b).onclick = () => { const h = $('#bi-html', b).value.trim(); if (!h) return; captureBoard(); S.board.spec = { title: '불러온 글꾸', html: h, notes: '' }; close(); viewBoard(); };
+    }
+  });
+}
+
 // ───────────────────────── 전역 액션 ─────────────────────────
 const ACTS = {
   tab: (el) => setTab(el.dataset.tab),
+  'chat-prompts': () => {
+    const ta = $('#prompt'); if (ta && ta.value) S.pendingPrompt = ta.value;
+    openSheet({
+      title: '작업실 커스텀 프롬프트',
+      body: `<p class="note">켜 둔 프롬프트가 이 프로젝트의 모든 대화에 함께 전달돼요. <b>우선</b> 표시는 기본 규칙과 충돌할 때 우선하는 프롬프트예요.</p>${pickerHtml('chat')}<div class="row end"><button class="btn ghost small" data-act="tab" data-tab="settings" data-close>${ICON.gear} 프롬프트 관리</button></div>`,
+      onMount: (b) => bindPicker(b, 'chat'),
+      onClose: () => { if (S.tab === 'chat') viewChat(); }
+    });
+  },
+  'custom-new': (el) => customEditSheet(null, el.dataset.target),
   projects: () => projectSheet(),
   threads: () => threadSheet(),
   'new-thread': async () => {

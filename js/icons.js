@@ -25,6 +25,8 @@ export const ICON = {
   chevron: s('<path d="M7 10l5 5 5-5"/>'),
   book: s('<path d="M5 4.5h10.5a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10.5"/>'),
   wand: s('<path d="M4 20L15 9"/><path d="M14 4v3M12.5 5.5h3M19 9v3M17.5 10.5h3M18 3.5l1 1"/>'),
+  board: s('<path d="M5 3.5h9.5L19 8v12.5H5z"/><path d="M14.5 3.5V8H19"/><path d="M8.5 12.5h7M8.5 15.5h7M8.5 18.5h4"/><path d="M9 6.5l.6 1.2 1.2.6-1.2.6L9 10.1l-.6-1.2-1.2-.6 1.2-.6z" fill="currentColor" stroke="none"/>'),
+  scroll: s('<path d="M7.5 4H18a2 2 0 0 1 2 2v1.5h-4"/><path d="M16 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-1.5h10"/><path d="M7.5 4A2 2 0 0 0 5.5 6v10.5"/><path d="M8.5 9.5h4.5M8.5 12.5h4.5"/>'),
   link: s('<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/>')
 };
 

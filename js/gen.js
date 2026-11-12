@@ -50,7 +50,7 @@ ${JSON_ONLY}
 스키마:
 {"rules":[{"comment":"이름","kind":"display|output|input|request","in":"JS 정규식 소스(슬래시 없이)","out":"치환 결과","flag":"g"}],"sample":"정규식이 실제로 걸리는 예시 AI 출력 텍스트","notes":"한국어 설명"}
 - kind: display=화면 표시만 변경, output=AI 출력 자체 수정, input=사용자 입력 수정, request=AI에 보낼 때만 수정.
-${risu ? '- 표시용(display) out 은 인라인 style 만, 한 줄로. CBS를 쓰면 flag 를 "gu<cbs>".' : '- 표시용 out 은 <style> 사용 가능, 클래스명은 고유 접두사로 네임스페이스.'}
+${risu ? '- 표시용(display) out 은 한 줄로 압축. CBS를 쓰면 flag 를 "gu<cbs>".' : '- 표시용 out 은 <style> 사용 가능, 클래스명은 고유 접두사로 네임스페이스.'}
 - 캡처 그룹은 $1, $2 … 로 참조.`,
     user: brief
   };
@@ -78,11 +78,31 @@ ${JSON_ONLY}
 디자인:
 - 세계관·분위기에서 출발한 고유 디자인 언어. 뻔한 카드 UI 반복 금지. 타이포·여백·질감·깊이·섹션별 개성, 그리고 가독성.
 - 코드 길이·토큰은 신경 쓰지 말고 퀄리티와 디테일에 집중.
-${risu ? `- 리스 규칙: out 은 인라인 style 만(<style>·class 금지), 애니메이션은 SVG SMIL 만, out 은 한 줄로 압축.
+${risu ? `- 리스 규칙: out 은 한 줄로 완전 압축(줄바꿈 금지 — 리스가 \\n 을 <br> 로 바꿈). <style> 을 쓸 경우 클래스명에 고유 접두사.
 - 칩 목록이 필요하면 필드 값 안에서만 "||" 로 구분하고, ② 칩 분리 정규식(in: "\\\\s*\\\\|\\\\|\\\\s*")을 메인 다음 순서로 둘 것.
 - 변수 기반 수치를 쓰면 flag 를 "gu<cbs>" 로 하고 vars 에 미리보기 값을 넣을 것.` : `- 실리 규칙: <style> 사용 가능하되 모든 클래스에 고유 접두사. CSS 애니메이션 가능.`}
 - sample 에는 정규식이 실제로 매치되는 완전한 블록이 있어야 함(미리보기에 사용).`,
     user: `컨셉: ${brief}${fields ? `\n필드: ${fields}` : ''}${mood ? `\n분위기 키워드: ${mood}` : ''}`
+  };
+}
+
+export function boardTask({ kind, body, concept, images, width }) {
+  return {
+    extra: `# 지금 할 일: 배포 게시판 글꾸(게시글 꾸밈 HTML) 제작
+${JSON_ONLY}
+스키마:
+{"title":"디자인 이름","html":"게시판에 그대로 붙여넣을 HTML","notes":"한국어 — 디자인 의도와 붙여넣기 주의점"}
+규칙 (게시판 제약 — 반드시 준수):
+- 바깥은 div 하나로 감싼 div 기반 구조. 모든 스타일은 순수 인라인 style. <style> 태그·class·<script> 금지.
+- 애니메이션은 SVG SMIL(<animate>, <animateTransform>)만. CSS @keyframes / animation 금지.
+- 글자가 올라가는 배경은 불투명 hex(rgba 저알파 금지 — 게시판 글자색 자동 보정으로 흐려짐).
+- 이미지는 고정폭 div(width:Npx; max-width:100%; overflow:hidden)로 감싸고 img 는 width:100%.
+- 구분선·장식은 이미지 대신 순수 CSS/SVG로.
+- 제작자 닉네임·크레딧 금지(익명 게시판). 우는 이모티콘(ㅠㅠ, ㅜㅜ 등) 절대 금지.
+- 전체 폭은 ${width || 700}px 기준(max-width:100%)으로, 모바일에서도 읽히게.
+- 사용자가 준 본문 내용은 의미를 바꾸지 말고 위계(제목·소제목·강조·목록)를 살려 배치. 없는 정보(날짜·링크·수치)를 지어내지 말 것.
+- 세계관·분위기에서 출발한 고유 디자인. 타이포·여백·질감·디테일, 그리고 가독성.`,
+    user: `글 종류: ${kind}\n\n[본문 내용]\n${body}${concept ? `\n\n[컨셉·분위기]\n${concept}` : ''}${images ? `\n\n[이미지 (URL | 설명)]\n${images}` : ''}`
   };
 }
 

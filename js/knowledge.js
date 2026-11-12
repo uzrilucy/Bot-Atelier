@@ -7,9 +7,13 @@ export const DEFAULT_PERSONA = `당신은 AI 롤플레이 봇(리스AI·실리�
 - 사용자가 좁은 범위의 수정(오타, 단순 교체)만 원하면 그 범위를 존중.
 - 확신 없는 부분은 아는 척하지 말고 솔직히 말한 뒤 함께 검증.`;
 
+export const KB_VERSION = 2;
+// v2: 인라인 전용·<style>/class 금지·@keyframes 금지(SMIL만)는 리스 정규식이 아니라 글꾸 규칙 → board 로 이동
+export const KB_MIGRATE = { 2: ['risu-regex', 'board', 'core', 'ui-design'] };
+
 export const DEFAULT_MODULES = [
   {
-    id: 'core', title: '기본 원칙', enabled: true, scope: ['chat', 'gen', 'ui'],
+    id: 'core', title: '기본 원칙', enabled: true, scope: ['chat', 'gen', 'ui', 'board'],
     content: `- 사용자에게 하는 설명은 한국어. 작업물 내부(봇 프롬프트·로어북 본문)는 토큰 효율을 위해 영어 압축 표기를 권장.
 - {{user}} = 사용자 캐릭터, {{char}} = 봇 이름. 사용자 캐릭터가 들어갈 자리는 전부 {{user}}로 표기.
 - 대상 플랫폼(리스AI/실리태번)이 정해지지 않았으면 작업 전에 먼저 질문. 프로젝트에 플랫폼이 지정돼 있으면 그대로 따름.
@@ -38,8 +42,6 @@ export const DEFAULT_MODULES = [
     id: 'risu-regex', title: '리스 정규식 (필수 규칙)', enabled: true, scope: ['chat', 'gen', 'ui', 'lint'],
     content: `- out 문자열은 반드시 한 줄로 완전 압축. 리스는 out을 마크다운 파서에 통과시켜 모든 \\n을 <br>로 바꾸므로 레이아웃·SVG가 깨짐.
 - type은 "editdisplay", "ableFlag": true, "flag"에 g 포함.
-- <style> 태그·class 기반 CSS 미지원 → 순수 인라인 style만.
-- 애니메이션은 전부 SVG SMIL(<animate>, <animateTransform>). CSS @keyframes 금지.
 - 2정규식 구조: ① 메인 블록 캡처 → ② "||"로 구분된 칩 분리. 순서 의존성 엄격(① 다음 ②).
 - "||"는 필드 값 내부에서만 사용. 서술 본문에는 절대 등장시키지 말 것.
 - 파일 형식: {"type":"regex","data":[{"comment":"","in":"","out":"","type":"editdisplay","ableFlag":true,"flag":"g"}]}`
@@ -61,7 +63,7 @@ export const DEFAULT_MODULES = [
 - 이미 적용한 정규식 수정은 전체 재임포트 대신 바꿀 부분만 안내.`
   },
   {
-    id: 'ui-design', title: '상태창·UI 디자인 철학', enabled: true, scope: ['chat', 'ui'],
+    id: 'ui-design', title: '상태창·UI·글꾸 디자인 철학', enabled: true, scope: ['chat', 'ui', 'board'],
     content: `- 참고작은 템플릿이 아님. 색 조합·폰트·장식·레이아웃·문구 스타일을 베끼지 말고, 매번 해당 봇의 세계관·캐릭터·분위기에서 고유한 디자인 언어를 새로 구축.
 - 디자인 코드는 길이·토큰 효율보다 퀄리티와 디테일 우선: 타이포그래피, 여백, 질감, 깊이감, 은은한 이펙트.
 - 섹션마다 성의 있게 — 같은 박스 디자인 재활용 금지. 그러면서도 가독성(정보 위계, 대비)은 반드시 확보.
@@ -69,8 +71,9 @@ export const DEFAULT_MODULES = [
 - 상태창 출력 포맷은 대문자 영어 헤더를 번역하지 말라고 명시하고, 태그 예: <ABST> ... </ABST>.`
   },
   {
-    id: 'board', title: '배포 게시판 글꾸', enabled: true, scope: ['chat', 'lint'],
-    content: `- 게시글 꾸밈은 div 기반 HTML + 전부 인라인 스타일.
+    id: 'board', title: '배포 게시판 글꾸', enabled: true, scope: ['chat', 'board', 'lint'],
+    content: `- 게시글 꾸밈은 div 기반 HTML + 전부 순수 인라인 style. <style> 태그·class 기반 CSS 사용 금지.
+- 애니메이션은 SVG SMIL(<animate>, <animateTransform>)만. CSS @keyframes / animation 속성 금지.
 - 익명 게시판: 홍보글에 제작자 닉네임·크레딧 넣지 않기.
 - 게시판이 글자색을 자동 보정함 → 반투명(rgba 저알파) 배경 위 글자는 흐리게 보임. 글자가 올라가는 배경은 불투명 hex.
 - 이미지는 전체 폭으로 늘어나므로 고정폭 div(width:Npx; max-width:100%; overflow:hidden)로 감싸기.
@@ -88,7 +91,7 @@ export const DEFAULT_MODULES = [
 const PLATFORM_LABEL = { risu: '리스AI(RisuAI)', st: '실리태번(SillyTavern)', both: '리스AI + 실리태번 둘 다', '': '미정' };
 export const platformLabel = (p) => PLATFORM_LABEL[p ?? ''] ?? '미정';
 
-export function buildSystem({ kb, persona, project, scope, extra = '' }) {
+export function buildSystem({ kb, persona, project, scope, extra = '', customs = [] }) {
   const mods = (kb?.modules || DEFAULT_MODULES).filter(m => m.enabled && (!m.scope || m.scope.includes(scope)));
   const parts = [];
   parts.push((persona && persona.trim()) || DEFAULT_PERSONA);
@@ -103,5 +106,9 @@ export function buildSystem({ kb, persona, project, scope, extra = '' }) {
     parts.push(p);
   }
   if (extra) parts.push(extra);
+  const add = customs.filter(c => c.mode !== 'priority' && c.content?.trim());
+  const pri = customs.filter(c => c.mode === 'priority' && c.content?.trim());
+  if (add.length) parts.push('# 사용자 커스텀 프롬프트 (추가 지시 — 함께 따를 것)\n' + add.map(c => `## ${c.title}\n${c.content.trim()}`).join('\n\n'));
+  if (pri.length) parts.push('# 사용자 커스텀 프롬프트 (우선 지시)\n위의 기본 규칙·작업 지시와 충돌하면 아래 지시를 우선하세요. 단, 요구된 출력 형식(JSON 스키마·코드 블록)은 유지하세요.\n' + pri.map(c => `## ${c.title}\n${c.content.trim()}`).join('\n\n'));
   return parts.join('\n\n');
 }

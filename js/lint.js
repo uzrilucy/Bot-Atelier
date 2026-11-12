@@ -1,5 +1,5 @@
 // 규칙 위반 검사기 — 룽님 지식 팩 기반
-import { minify, normalizeRisuFlag, jsFlags, parseStFind, loreEntries } from './convert.js';
+import { minify, inlineCss, normalizeRisuFlag, jsFlags, parseStFind, loreEntries } from './convert.js';
 
 export const KINDS = {
   auto: '자동 감지', risuRegex: '리스 정규식', stRegex: '실리 정규식', risuTrigger: '리스 트리거',
@@ -83,9 +83,6 @@ export function lintHtml(html, platform = 'risu', where = 'HTML', { asRegexOut =
   const h = String(html || '');
   if (/<script\b/i.test(h)) out.push(I('error', 'H-JS', '<script> 는 두 플랫폼 모두 표시용 정규식에서 쓰지 않아요.', where));
   if (platform === 'risu') {
-    if (/<style\b/i.test(h)) out.push(I('error', 'R-STYLE', '<style> 태그는 리스에서 동작하지 않아요 — 인라인 style로 바꿔야 해요.', where, true));
-    if (/@keyframes|animation\s*:/i.test(h)) out.push(I('error', 'R-ANIM', 'CSS 애니메이션(@keyframes/animation)은 리스에서 안 돼요 — SVG SMIL(<animate>)을 쓰세요.', where));
-    if (/\sclass\s*=/i.test(h)) out.push(I('warn', 'R-CLASS', 'class 속성은 리스에서 의미가 없어요 (스타일시트 미지원).', where, true));
     if (/\r?\n/.test(h)) out.push(I(asRegexOut ? 'error' : 'info', 'R-NL', asRegexOut ? 'out 안에 줄바꿈이 있어요 — 리스가 \\n 을 <br> 로 바꿔 레이아웃·SVG가 깨져요. 한 줄로 압축해야 해요.' : '정규식 out에 넣을 때는 한 줄 압축이 필요해요.', where, true));
     if (/\{\{calc::[^}]*\{\{getvar/i.test(h)) out.push(I('error', 'R-NEST', '{{calc}} 안에 {{getvar}} 를 중첩하면 평가가 실패해요.', where));
     if (/calc\(/i.test(h) && /\{\{getvar/i.test(h)) out.push(I('info', 'R-CSSCALC', 'CSS calc() 대신 CBS {{calc::}} 로 계산하는 편이 안정적이에요.', where));
@@ -105,7 +102,10 @@ export function lintBoard(html, where = '게시글') {
   const out = [];
   const h = String(html || '');
   if (/ㅠ|ㅜ_?ㅜ|ㅜㅜ|T_T|ㅠ_ㅠ/.test(h)) out.push(I('error', 'B-CRY', '우는 이모티콘(ㅠㅠ/ㅜㅜ 등)이 있어요 — 배포 사이트 금지·경고 사항이에요.', where));
-  if (/<style\b|\sclass\s*=/i.test(h)) out.push(I('error', 'B-INLINE', '게시판 글꾸는 전부 인라인 스타일이어야 해요 (<style>·class 불가).', where));
+  if (/<script\b/i.test(h)) out.push(I('error', 'B-JS', '<script> 는 게시판에서 쓸 수 없어요.', where));
+  if (/<style\b|\sclass\s*=/i.test(h)) out.push(I('error', 'B-INLINE', '게시판 글꾸는 전부 순수 인라인 스타일이어야 해요 (<style>·class 불가) — 자동 수정으로 인라인 변환할 수 있어요.', where, true));
+  if (/@keyframes|animation\s*:/i.test(h)) out.push(I('error', 'B-ANIM', 'CSS 애니메이션(@keyframes/animation)은 글꾸에서 안 돼요 — SVG SMIL(<animate>)로 바꿔야 해요.', where));
+  if (!/<div\b/i.test(h)) out.push(I('info', 'B-DIV', 'div 기반 구조를 권장해요.', where));
   for (const m of h.matchAll(/background(?:-color)?\s*:\s*rgba\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*(0?\.\d+|0)\s*\)/gi)) {
     if (parseFloat(m[1]) < 0.85) { out.push(I('warn', 'B-RGBA', `반투명 배경(${snip(m[0])}) — 게시판 글자색 자동 보정 때문에 그 위 글자가 흐려져요. 불투명 hex를 쓰세요.`, where)); break; }
   }
@@ -255,6 +255,10 @@ export function lint(text, forced = 'auto', platform = 'risu') {
 // ---------- 자동 수정 ----------
 export function autoFix(text, kind) {
   if (kind === 'html') return { text: minify(text), notes: ['한 줄 압축'] };
+  if (kind === 'board') {
+    const r = inlineCss(text);
+    return { text: r.html, notes: (r.changed ? ['<style> → 인라인 style 변환, class 제거'] : ['변환할 <style> 이 없어요']).concat(r.warnings) };
+  }
   const j = JSON.parse(text);
   const notes = [];
   if (kind === 'risuRegex') {
